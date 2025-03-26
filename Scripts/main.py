@@ -404,7 +404,7 @@ def run_script(script_key):
             python_exec = os.path.abspath(sys.executable)
             script_abs_path = os.path.abspath(script_file)
             project_root = os.path.abspath(os.getcwd())  # Directorio raíz del proyecto
-            print(f"Project Path: {project_root}\.venv")
+            print(f"Project Path: {project_root}\\.venv")
             print(f"python exe{python_exec}")
             # Construir comando completo
             command = (

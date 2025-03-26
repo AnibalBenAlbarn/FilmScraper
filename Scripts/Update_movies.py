@@ -1,6 +1,5 @@
 import time
 import re
-import pymysql
 import json
 import os
 import logging
