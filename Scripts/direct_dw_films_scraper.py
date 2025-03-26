@@ -51,7 +51,7 @@ base_url = "https://hdfull.blog"
 movies_url = "https://hdfull.blog/peliculas/imdb_rating"
 
 # Configuración de Selenium
-service = Service('chromedriver.exe')  # Reemplaza 'path/to/chromedriver' con la ruta a tu chromedriver
+service = Service('../chromedriver.exe')  # Reemplaza 'path/to/chromedriver' con la ruta a tu chromedriver
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")  # Ejecuta Chrome en modo headless
 driver = webdriver.Chrome(service=service, options=options)
@@ -63,10 +63,13 @@ progress_file = "../progress/movie_progress.json"
 # Función para conectar a la base de datos
 def connect_db():
     try:
-        connection = sqlite3.connect(r'C:/Users/G531/Desktop/Proyectos/BD/direct_dw_db.db')
+        connection = sqlite3.connect(r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db')
         connection.row_factory = sqlite3.Row
         logger.debug("Conexión a la base de datos establecida correctamente")
         return connection
+    except Exception as e:
+        logger.error(f"Error al conectar a la base de datos: {e}")
+        raise
     except Exception as e:
         logger.error(f"Error al conectar a la base de datos: {e}")
         raise

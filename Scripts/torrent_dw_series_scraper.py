@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Path to the database
-db_path = r'C:/Users/G531/Desktop/Proyectos/BD/torrent_dw_db.db'
+db_path = r'D:/Workplace/HdfullScrappers/Scripts/torrent_dw_db.db'
 
 # Headers (para evitar ser bloqueado)
 headers = {

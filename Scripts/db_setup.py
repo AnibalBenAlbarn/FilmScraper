@@ -14,8 +14,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Rutas de las bases de datos
-DIRECT_DB_PATH = r'D:\Workplace\HdfullScrappers\.venv\direct_dw_db.db'
-TORRENT_DB_PATH = r'D:\Workplace\HdfullScrappers\.venv\torrent_dw_db.db'
+DIRECT_DB_PATH = r'D:\Workplace\HdfullScrappers\Scripts\direct_dw_db.db'
+TORRENT_DB_PATH = r'D:\Workplace\HdfullScrappers\Scripts\torrent_dw_db.db'
 
 def create_direct_db():
     """Crea la base de datos direct_dw_db.db."""
