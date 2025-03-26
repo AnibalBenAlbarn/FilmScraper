@@ -1,0 +1,149 @@
+2025-03-20 09:54:20,501 - __main__ - INFO - Iniciando el scraper de películas...
+2025-03-20 09:54:20,501 - __main__ - INFO - Iniciando sesión...
+2025-03-20 09:54:22,760 - __main__ - INFO - Sesión iniciada correctamente
+2025-03-20 09:54:22,761 - __main__ - INFO - No se encontró archivo de progreso. Comenzando desde el principio.
+2025-03-20 09:54:22,761 - __main__ - INFO - Extrayendo datos de la página: https://hdfull.blog/peliculas/imdb_rating
+2025-03-20 09:54:22,761 - __main__ - INFO - Extrayendo películas de la página: https://hdfull.blog/peliculas/imdb_rating
+2025-03-20 09:54:25,619 - __main__ - INFO - Encontradas 40 películas en la página 1
+2025-03-20 09:54:25,619 - __main__ - INFO - Extrayendo datos de la película 1/40: https://hdfull.blog/pelicula/the-actor
+2025-03-20 09:54:25,620 - __main__ - INFO - Extrayendo detalles de la película: https://hdfull.blog/pelicula/the-actor
+2025-03-20 09:54:47,241 - __main__ - INFO - Driver de Selenium cerrado.
+2025-03-20 09:54:47,241 - __main__ - ERROR - Excepción no capturada
+Traceback (most recent call last):
+  File "C:\Python312\Lib\http\client.py", line 1428, in getresponse
+    response.begin()
+  File "C:\Python312\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\socket.py", line 720, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionResetError: [WinError 10054] Se ha forzado la interrupción de una conexión existente por el host remoto
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 459, in <module>
+    extract_all_movies()
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 423, in extract_all_movies
+    movies, last_movie_index = extract_movies_from_page(page_url, page_number, start_id=1,
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 269, in extract_movies_from_page
+    movie_details = extract_movie_details(movie_url, movie_id)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 125, in extract_movie_details
+    driver.get(movie_url)
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 454, in get
+    self.execute(Command.GET, {"url": url})
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 427, in execute
+    response = self.command_executor.execute(driver_command, params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\remote_connection.py", line 404, in execute
+    return self._request(command_info[0], url, body=data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\remote_connection.py", line 428, in _request
+    response = self._conn.request(method, url, body=body, headers=headers, timeout=self._client_config.timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\_request_methods.py", line 143, in request
+    return self.request_encode_body(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\_request_methods.py", line 278, in request_encode_body
+    return self.urlopen(method, url, **extra_kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\poolmanager.py", line 443, in urlopen
+    response = conn.urlopen(method, u.request_uri, **kw)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 1430, in getresponse
+    self.close()
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connection.py", line 320, in close
+    def close(self) -> None:
+    
+KeyboardInterrupt
+2025-03-20 09:56:32,087 - __main__ - INFO - Iniciando el scraper de películas...
+2025-03-20 09:56:32,089 - __main__ - INFO - Iniciando sesión...
+2025-03-20 09:56:34,310 - __main__ - INFO - Sesión iniciada correctamente
+2025-03-20 09:56:34,310 - __main__ - INFO - No se encontró archivo de progreso. Comenzando desde el principio.
+2025-03-20 09:56:34,310 - __main__ - INFO - Extrayendo datos de la página: https://hdfull.blog/peliculas/imdb_rating
+2025-03-20 09:56:34,310 - __main__ - INFO - Extrayendo películas de la página: https://hdfull.blog/peliculas/imdb_rating
+2025-03-20 09:56:37,201 - __main__ - INFO - Encontradas 40 películas en la página 1
+2025-03-20 09:56:37,201 - __main__ - INFO - Extrayendo datos de la película 1/40: https://hdfull.blog/pelicula/the-actor
+2025-03-20 09:56:37,201 - __main__ - INFO - Extrayendo detalles de la película: https://hdfull.blog/pelicula/the-actor
+2025-03-20 09:57:03,677 - __main__ - INFO - Driver de Selenium cerrado.
+2025-03-20 09:57:03,677 - __main__ - ERROR - Excepción no capturada
+Traceback (most recent call last):
+  File "C:\Python312\Lib\http\client.py", line 1428, in getresponse
+    response.begin()
+  File "C:\Python312\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\socket.py", line 720, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+ConnectionResetError: [WinError 10054] Se ha forzado la interrupción de una conexión existente por el host remoto
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 459, in <module>
+    extract_all_movies()
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 423, in extract_all_movies
+    movies, last_movie_index = extract_movies_from_page(page_url, page_number, start_id=1,
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 269, in extract_movies_from_page
+    movie_details = extract_movie_details(movie_url, movie_id)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\direct_dw_films_scraper.py", line 175, in extract_movie_details
+    embed_selector.click()
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\webelement.py", line 119, in click
+    self._execute(Command.CLICK_ELEMENT)
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\webelement.py", line 570, in _execute
+    return self._parent.execute(command, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\webdriver.py", line 427, in execute
+    response = self.command_executor.execute(driver_command, params)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\remote_connection.py", line 404, in execute
+    return self._request(command_info[0], url, body=data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\selenium\webdriver\remote\remote_connection.py", line 428, in _request
+    response = self._conn.request(method, url, body=body, headers=headers, timeout=self._client_config.timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\_request_methods.py", line 143, in request
+    return self.request_encode_body(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\_request_methods.py", line 278, in request_encode_body
+    return self.urlopen(method, url, **extra_kw)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\poolmanager.py", line 443, in urlopen
+    response = conn.urlopen(method, u.request_uri, **kw)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connection.py", line 516, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\http\client.py", line 1430, in getresponse
+    self.close()
+  File "D:\Workplace\HdfullScrappers\.venv\Lib\site-packages\urllib3\connection.py", line 320, in close
+    def close(self) -> None:
+    
+KeyboardInterrupt

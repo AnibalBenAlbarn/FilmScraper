@@ -1,0 +1,37 @@
+# Web scraping
+selenium==4.15.2
+beautifulsoup4==4.12.2
+requests==2.31.0
+lxml==4.9.3
+
+# Database
+pymysql==1.1.0
+# sqlite3 is part of Python's standard library
+
+# Browser automation
+webdriver-manager==4.0.1
+
+# HTTP utilities
+urllib3==2.0.7
+
+# Email functionality
+# smtplib is part of Python's standard library
+
+# Concurrent processing
+# concurrent.futures is part of Python's standard library
+
+# Date and time handling
+python-dateutil==2.8.2
+
+# Regular expressions
+# re is part of Python's standard library
+
+# File system operations
+# os, shutil, pathlib are part of Python's standard library
+
+# System interaction
+# sys, subprocess are part of Python's standard library
+
+# Logging
+# logging is part of Python's standard library
+colorlog==6.7.0  # Optional, for colored console logs
