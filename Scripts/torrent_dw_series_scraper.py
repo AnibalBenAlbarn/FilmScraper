@@ -61,50 +61,50 @@ def initialize_database():
     cursor = conn.cursor()
 
     cursor.executescript('''
-BEGIN TRANSACTION;
-CREATE TABLE IF NOT EXISTS "qualities" (
-    "id" INTEGER,
-    "quality" TEXT NOT NULL UNIQUE,
-    PRIMARY KEY("id" AUTOINCREMENT)
-);
-CREATE TABLE IF NOT EXISTS "series_episodes" (
-    "id" INTEGER,
-    "season_id" INTEGER NOT NULL,
-    "episode_number" INTEGER NOT NULL,
-    "title" TEXT NOT NULL,
-    PRIMARY KEY("id" AUTOINCREMENT),
-    FOREIGN KEY("season_id") REFERENCES "series_seasons"("id") ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS "series_seasons" (
-    "id" INTEGER,
-    "series_id" INTEGER NOT NULL,
-    "season_number" INTEGER NOT NULL,
-    PRIMARY KEY("id" AUTOINCREMENT),
-    FOREIGN KEY("series_id") REFERENCES "torrent_downloads"("id") ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS "torrent_downloads" (
-    "id" INTEGER,
-    "title" TEXT NOT NULL,
-    "year" INTEGER NOT NULL,
-    "genre" TEXT,
-    "director" TEXT,
-    "type" TEXT NOT NULL CHECK("type" IN ('movie', 'series')),
-    "added_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY("id" AUTOINCREMENT)
-);
-CREATE TABLE IF NOT EXISTS "torrent_files" (
-    "id" INTEGER,
-    "torrent_id" INTEGER,
-    "episode_id" INTEGER,
-    "quality_id" INTEGER NOT NULL,
-    "torrent_link" TEXT NOT NULL,
-    PRIMARY KEY("id" AUTOINCREMENT),
-    FOREIGN KEY("episode_id") REFERENCES "series_episodes"("id") ON DELETE CASCADE,
-    FOREIGN KEY("quality_id") REFERENCES "qualities"("id") ON DELETE CASCADE,
-    FOREIGN KEY("torrent_id") REFERENCES "torrent_downloads"("id") ON DELETE CASCADE
-);
-COMMIT;
-''')
+    BEGIN TRANSACTION;
+    CREATE TABLE IF NOT EXISTS "qualities" (
+        "id" INTEGER,
+        "quality" TEXT NOT NULL UNIQUE,
+        PRIMARY KEY("id" AUTOINCREMENT)
+    );
+    CREATE TABLE IF NOT EXISTS "series_episodes" (
+        "id" INTEGER,
+        "season_id" INTEGER NOT NULL,
+        "episode_number" INTEGER NOT NULL,
+        "title" TEXT NOT NULL,
+        PRIMARY KEY("id" AUTOINCREMENT),
+        FOREIGN KEY("season_id") REFERENCES "series_seasons"("id") ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "series_seasons" (
+        "id" INTEGER,
+        "series_id" INTEGER NOT NULL,
+        "season_number" INTEGER NOT NULL,
+        PRIMARY KEY("id" AUTOINCREMENT),
+        FOREIGN KEY("series_id") REFERENCES "torrent_downloads"("id") ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "torrent_downloads" (
+        "id" INTEGER,
+        "title" TEXT NOT NULL,
+        "year" INTEGER NOT NULL,
+        "genre" TEXT,
+        "director" TEXT,
+        "type" TEXT NOT NULL CHECK("type" IN ('movie', 'series')),
+        "added_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY("id" AUTOINCREMENT)
+    );
+    CREATE TABLE IF NOT EXISTS "torrent_files" (
+        "id" INTEGER,
+        "torrent_id" INTEGER,
+        "episode_id" INTEGER,
+        "quality_id" INTEGER NOT NULL,
+        "torrent_link" TEXT NOT NULL,
+        PRIMARY KEY("id" AUTOINCREMENT),
+        FOREIGN KEY("episode_id") REFERENCES "series_episodes"("id") ON DELETE CASCADE,
+        FOREIGN KEY("quality_id") REFERENCES "qualities"("id") ON DELETE CASCADE,
+        FOREIGN KEY("torrent_id") REFERENCES "torrent_downloads"("id") ON DELETE CASCADE
+    );
+    COMMIT;
+    ''')
 
     conn.commit()
     conn.close()
@@ -143,35 +143,61 @@ def save_progress(current_id, total_saved):
         logger.error(f"Error al guardar el archivo de progreso: {str(e)}")
 
 
-def check_if_series_exists(title):
-    """Verifica si la serie ya existe en la base de datos."""
-    conn = sqlite3.connect(db_path)
+def get_quality_id(conn, quality):
+    """Obtiene el ID de una calidad, insertándola si no existe."""
+    cursor = conn.cursor()
+
+    # Verificar si la calidad ya existe
+    cursor.execute("SELECT id FROM qualities WHERE quality = ?", (quality,))
+    result = cursor.fetchone()
+
+    if result:
+        return result[0]
+
+    # Si no existe, insertarla
+    cursor.execute("INSERT INTO qualities (quality) VALUES (?)", (quality,))
+    conn.commit()
+
+    # Obtener el ID de la calidad recién insertada
+    cursor.execute("SELECT id FROM qualities WHERE quality = ?", (quality,))
+    result = cursor.fetchone()
+
+    return result[0]
+
+
+def check_if_series_exists(conn, title):
+    """Verifica si la serie ya existe en la base de datos y devuelve su ID."""
     cursor = conn.cursor()
 
     cursor.execute("SELECT id FROM torrent_downloads WHERE title = ? AND type = 'series'", (title,))
     result = cursor.fetchone()
 
-    conn.close()
     return result[0] if result else None
 
 
-def check_if_episode_exists_with_quality(series_id, episode_number, quality):
-    """Verifica si un episodio ya existe con una calidad específica."""
-    conn = sqlite3.connect(db_path)
+def check_if_episode_exists(conn, season_id, episode_number, episode_title):
+    """Verifica si un episodio ya existe y devuelve su ID."""
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT tf.id
-    FROM torrent_files tf
-    JOIN series_episodes se ON tf.episode_id = se.id
-    JOIN series_seasons ss ON se.season_id = ss.id
-    JOIN qualities q ON tf.quality_id = q.id
-    WHERE ss.series_id = ? AND se.episode_number = ? AND q.quality = ?
-""", (series_id, episode_number, quality))
+        SELECT id FROM series_episodes 
+        WHERE season_id = ? AND episode_number = ? AND title = ?
+    """, (season_id, episode_number, episode_title))
 
     result = cursor.fetchone()
-    conn.close()
+    return result[0] if result else None
 
+
+def check_if_quality_link_exists(conn, episode_id, quality_id, torrent_link):
+    """Verifica si ya existe un enlace de torrent para un episodio y calidad específicos."""
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id FROM torrent_files 
+        WHERE episode_id = ? AND quality_id = ? AND torrent_link = ?
+    """, (episode_id, quality_id, torrent_link))
+
+    result = cursor.fetchone()
     return result is not None
 
 
@@ -189,27 +215,76 @@ def get_soup(url, retries=3):
     return None
 
 
+def extract_series_info(full_title):
+    """Extrae el título de la serie y el número de temporada del título completo."""
+    # Patrón para buscar "- Xª Temporada" o similar
+    season_pattern = r'[-–]\s*(\d+)[ªa°]?\s*[Tt]emporada'
+
+    # Buscar el patrón en el título
+    season_match = re.search(season_pattern, full_title)
+
+    if season_match:
+        # Obtener el número de temporada
+        season_number = int(season_match.group(1))
+
+        # Obtener el título de la serie (todo lo que está antes del patrón)
+        series_title = full_title[:season_match.start()].strip()
+
+        return series_title, season_number
+    else:
+        # Si no se encuentra el patrón, asumir que es la temporada 1
+        return full_title.strip(), 1
+
+
+def parse_episode_range(episode_text):
+    """Parsea el texto del episodio para obtener el número o rango de episodios."""
+    # Buscar patrones como "1x01", "1x01 al 1x03", etc.
+    single_episode_pattern = r'(\d+)x(\d+)'
+    range_pattern = r'(\d+)x(\d+)\s*(?:al|a|hasta)\s*(?:\d+x)?(\d+)'
+
+    # Primero intentar con el patrón de rango
+    range_match = re.search(range_pattern, episode_text)
+    if range_match:
+        season = int(range_match.group(1))
+        start_episode = int(range_match.group(2))
+        end_episode = int(range_match.group(3))
+        return start_episode, f"{season}x{start_episode} al {season}x{end_episode}"
+
+    # Si no es un rango, buscar un episodio individual
+    single_match = re.search(single_episode_pattern, episode_text)
+    if single_match:
+        season = int(single_match.group(1))
+        episode = int(single_match.group(2))
+        return episode, f"{season}x{episode}"
+
+    # Si no se encuentra ningún patrón, devolver 0 como número de episodio
+    return 0, episode_text
+
+
 def scrape_series_details(url):
     """Extrae los detalles de una serie desde su URL."""
     logger.info(f"Extrayendo detalles de la serie en URL: {url}")
     soup = get_soup(url)
     if not soup:
         logger.warning(f"No se pudo obtener contenido de {url}")
-        return None, "Unknown", []
+        return None, None, None, []
 
-    # Buscar el título
+    # Buscar el título completo (incluye nombre de la serie y temporada)
     title_element = soup.find('h2', class_='position-relative ml-2 descargarTitulo')
     if not title_element:
         logger.warning(f"No se encontró título en {url}")
-        return None, "Unknown", []
+        return None, None, None, []
 
-    title = title_element.text.strip()
+    full_title = title_element.text.strip()
+
+    # Extraer el título de la serie y el número de temporada
+    series_title, season_number = extract_series_info(full_title)
+
+    logger.info(f"Serie: '{series_title}', Temporada: {season_number}")
 
     # Buscar la calidad en el div específico
     quality = "Unknown"
-
-    # Buscar el formato (calidad) en el div específico
-    format_div = soup.select_one('div[style="margin-right: 0%;"].d-inline-block')
+    format_div = soup.select_one('div.d-inline-block')
     if format_div:
         format_p = format_div.find('p')
         if format_p and 'Formato:' in format_p.text:
@@ -224,95 +299,97 @@ def scrape_series_details(url):
                 logger.info(f"Calidad encontrada (búsqueda alternativa): {quality}")
                 break
 
-    # Buscar enlaces de torrent
+    # Buscar el número total de episodios
+    episodes_count = 0
+    for p_tag in soup.find_all('p'):
+        if 'Episodios:' in p_tag.text:
+            try:
+                episodes_count = int(p_tag.text.split(':')[-1].strip())
+                logger.info(f"Número de episodios: {episodes_count}")
+                break
+            except ValueError:
+                pass
+
+    # Buscar enlaces de torrent en la tabla
     episodes = []
     table = soup.find('table', class_='table-striped')
     if not table:
         logger.warning(f"No se encontró tabla de episodios en {url}")
-        return title, quality, []
+        return series_title, season_number, quality, []
 
     for row in table.select('tbody tr'):
         try:
-            episode_range = row.select_one('td:nth-child(1)').text.strip()
+            # Obtener el texto del episodio (puede ser un rango)
+            episode_text = row.select_one('td:nth-child(1)').text.strip()
+
+            # Parsear el número o rango de episodios
+            episode_number, episode_display = parse_episode_range(episode_text)
+
+            # Obtener el enlace del torrent
             torrent_link = row.select_one('a#download_torrent')
             if torrent_link and 'href' in torrent_link.attrs:
-                full_torrent_link = f"https:{torrent_link['href']}" if torrent_link['href'].startswith(
-                    "//") else torrent_link['href']
-                episodes.append((episode_range, full_torrent_link))
+                full_torrent_link = f"https:{torrent_link['href']}" if torrent_link['href'].startswith("//") else \
+                torrent_link['href']
+
+                # Crear el título completo del episodio
+                episode_title = f"{series_title} - {season_number}ª Temporada [{quality}] - {episode_display}"
+
+                episodes.append((episode_number, episode_title, full_torrent_link))
         except (AttributeError, IndexError) as e:
             logger.error(f"Error al procesar fila de episodio: {e}")
 
-    logger.info(f"Se extrajeron {len(episodes)} enlaces de torrent para la serie '{title}'.")
-    return title, quality, episodes
+    logger.info(f"Se extrajeron {len(episodes)} enlaces de torrent para la serie '{series_title}'.")
+    return series_title, season_number, quality, episodes
 
 
-def insert_data(db_conn, title, quality, episodes):
+def insert_data(db_conn, series_title, season_number, quality, episodes):
     """Inserta los datos de una serie en la base de datos."""
-    cursor = db_conn.cursor()
+    if not series_title or not episodes:
+        logger.warning("No hay suficientes datos para insertar")
+        return False
+
     try:
         # Verificar si la serie ya existe
-        series_id = check_if_series_exists(title)
+        series_id = check_if_series_exists(db_conn, series_title)
 
-        # Insertar calidad si no existe
-        cursor.execute("INSERT OR IGNORE INTO qualities (quality) VALUES (?)", (quality,))
-        cursor.execute("SELECT id FROM qualities WHERE quality = ?", (quality,))
-        quality_id = cursor.fetchone()[0]
+        # Obtener el ID de la calidad
+        quality_id = get_quality_id(db_conn, quality)
+
+        cursor = db_conn.cursor()
 
         if not series_id:
             # Insertar serie nueva
-            cursor.execute(
-                "INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
-                (title, 2025, 'Unknown', 'Unknown', 'series'))
+            cursor.execute("INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
+                           (series_title, 2025, 'Unknown', 'Unknown', 'series'))
             series_id = cursor.lastrowid
+            logger.info(f"Nueva serie añadida: '{series_title}'")
 
-            # Insertar temporada
-            cursor.execute("INSERT INTO series_seasons (series_id, season_number) VALUES (?, ?)",
-                           (series_id, 1))
-            season_id = cursor.lastrowid
-            logger.info(f"Nueva serie añadida: '{title}'")
-        else:
-            # Obtener el ID de la temporada existente
-            cursor.execute("SELECT id FROM series_seasons WHERE series_id = ? AND season_number = ?",
-                           (series_id, 1))
-            season_result = cursor.fetchone()
-            if season_result:
-                season_id = season_result[0]
-            else:
-                # Crear temporada si no existe
-                cursor.execute("INSERT INTO series_seasons (series_id, season_number) VALUES (?, ?)",
-                               (series_id, 1))
-                season_id = cursor.lastrowid
-            logger.info(f"Actualizando serie existente: '{title}'")
+        # Insertar temporada (siempre crear una nueva temporada para cada calidad)
+        cursor.execute("INSERT INTO series_seasons (series_id, season_number) VALUES (?, ?)",
+                       (series_id, season_number))
+        season_id = cursor.lastrowid
+        logger.info(f"Nueva temporada añadida: {season_number} para serie '{series_title}' con calidad {quality}")
 
         # Contador para episodios añadidos
         episodes_added = 0
 
         # Insertar episodios
-        for episode_range, torrent_link in episodes:
-            episode_num_match = re.findall(r'\d+', episode_range)
-            episode_num = int(episode_num_match[0]) if episode_num_match else 1
-            episode_title = f"{title} - {episode_range}"
+        for episode_number, episode_title, torrent_link in episodes:
+            # Verificar si el episodio ya existe con este título exacto
+            existing_episode_id = check_if_episode_exists(db_conn, season_id, episode_number, episode_title)
 
-            # Verificar si el episodio ya existe con esta calidad
-            if check_if_episode_exists_with_quality(series_id, episode_num, quality):
-                logger.info(f"El episodio {episode_num} con calidad {quality} ya existe para '{title}'")
-                continue
-
-            # Verificar si el episodio existe pero con otra calidad
-            cursor.execute("""
-            SELECT id FROM series_episodes 
-            WHERE season_id = ? AND episode_number = ?
-        """, (season_id, episode_num))
-
-            episode_result = cursor.fetchone()
-            if episode_result:
-                episode_id = episode_result[0]
+            if existing_episode_id:
+                episode_id = existing_episode_id
             else:
-                # Crear episodio si no existe
-                cursor.execute(
-                    "INSERT INTO series_episodes (season_id, episode_number, title) VALUES (?, ?, ?)",
-                    (season_id, episode_num, episode_title))
+                # Crear episodio
+                cursor.execute("INSERT INTO series_episodes (season_id, episode_number, title) VALUES (?, ?, ?)",
+                               (season_id, episode_number, episode_title))
                 episode_id = cursor.lastrowid
+
+            # Verificar si ya existe este enlace de torrent para este episodio y calidad
+            if check_if_quality_link_exists(db_conn, episode_id, quality_id, torrent_link):
+                logger.info(f"El episodio {episode_title} ya tiene enlace para calidad {quality}")
+                continue
 
             # Insertar enlace de torrent con la calidad correspondiente
             cursor.execute(
@@ -322,14 +399,12 @@ def insert_data(db_conn, title, quality, episodes):
             episodes_added += 1
 
         db_conn.commit()
-        logger.info(f"Se añadieron {episodes_added} episodios para la serie '{title}' con calidad {quality}.")
+        logger.info(f"Se añadieron {episodes_added} episodios para la serie '{series_title}' con calidad {quality}.")
         return episodes_added > 0
     except Exception as e:
         db_conn.rollback()
         logger.error(f"Error al insertar datos: {e}")
         return False
-    finally:
-        cursor.close()
 
 
 def scrape_series(start_id=1, max_consecutive_failures=10):
@@ -351,10 +426,10 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
 
             success = False
             for attempt in range(3):
-                title, quality, episodes = scrape_series_details(series_url)
-                if title and title != "Desconocido" and episodes:
-                    if insert_data(conn, title, quality, episodes):
-                        logger.info(f"Guardado: {title} con calidad {quality}")
+                series_title, season_number, quality, episodes = scrape_series_details(series_url)
+                if series_title and episodes:
+                    if insert_data(conn, series_title, season_number, quality, episodes):
+                        logger.info(f"Guardado: {series_title} - Temporada {season_number} con calidad {quality}")
                         total_saved += 1
                         consecutive_failures = 0  # Reiniciar contador de fallos
                     success = True
@@ -389,8 +464,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
     finally:
         # Guardar progreso final
         save_progress(current_id, total_saved)
-        logger.info(
-            f"Proceso completado o interrumpido. Se guardaron {total_saved} series en la base de datos.")
+        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} series en la base de datos.")
         conn.close()
 
 

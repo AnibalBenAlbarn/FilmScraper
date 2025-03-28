@@ -144,22 +144,51 @@ def save_progress(current_id, total_saved):
         logger.error(f"Error al guardar el archivo de progreso: {str(e)}")
 
 
-def check_if_movie_exists_with_quality(title, year, quality):
-    """Verifica si la película ya existe en la base de datos con la misma calidad."""
-    conn = sqlite3.connect(db_path)
+def get_quality_id(conn, quality):
+    """Obtiene el ID de una calidad, insertándola si no existe."""
+    cursor = conn.cursor()
+
+    # Verificar si la calidad ya existe
+    cursor.execute("SELECT id FROM qualities WHERE quality = ?", (quality,))
+    result = cursor.fetchone()
+
+    if result:
+        return result[0]
+
+    # Si no existe, insertarla
+    cursor.execute("INSERT INTO qualities (quality) VALUES (?)", (quality,))
+    conn.commit()
+
+    # Obtener el ID de la calidad recién insertada
+    cursor.execute("SELECT id FROM qualities WHERE quality = ?", (quality,))
+    result = cursor.fetchone()
+
+    return result[0]
+
+
+def check_if_movie_exists(conn, title, year):
+    """Verifica si una película ya existe y devuelve su ID."""
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT td.id 
-        FROM torrent_downloads td
-        JOIN torrent_files tf ON td.id = tf.torrent_id
-        JOIN qualities q ON tf.quality_id = q.id
-        WHERE td.title = ? AND td.year = ? AND td.type = 'movie' AND q.quality = ?
-    """, (title, year, quality))
+        SELECT id FROM torrent_downloads 
+        WHERE title = ? AND year = ? AND type = 'movie'
+    """, (title, year))
 
     result = cursor.fetchone()
-    conn.close()
+    return result[0] if result else None
 
+
+def check_if_quality_link_exists(conn, torrent_id, quality_id):
+    """Verifica si ya existe un enlace de torrent para una película y calidad específicas."""
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id FROM torrent_files 
+        WHERE torrent_id = ? AND quality_id = ? AND episode_id IS NULL
+    """, (torrent_id, quality_id))
+
+    result = cursor.fetchone()
     return result is not None
 
 
@@ -222,6 +251,12 @@ def get_movie_data(movie_url):
 
         torrent_link = "https:" + torrent_element['href'] if torrent_element else "No disponible"
 
+        # Convertir el año a entero si es posible
+        try:
+            year = int(year)
+        except ValueError:
+            year = 0
+
         return {
             'title': title,
             'year': year,
@@ -238,45 +273,53 @@ def get_movie_data(movie_url):
 def save_to_db(movie_data):
     """Guarda los datos de una película en la base de datos."""
     try:
-        # Verificar si la película ya existe con la misma calidad
-        if check_if_movie_exists_with_quality(movie_data['title'], movie_data['year'], movie_data['quality']):
-            logger.info(
-                f"La película '{movie_data['title']}' ({movie_data['year']}) con calidad {movie_data['quality']} ya existe en la base de datos")
-            return False
-
         conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
 
-        # Verificar si la película existe pero con diferente calidad
-        cursor.execute("SELECT id FROM torrent_downloads WHERE title = ? AND year = ? AND type = 'movie'",
-                       (movie_data['title'], movie_data['year']))
-        existing_movie = cursor.fetchone()
+        # Verificar si la película ya existe
+        movie_id = check_if_movie_exists(conn, movie_data['title'], movie_data['year'])
 
-        if existing_movie:
-            torrent_id = existing_movie[0]
-            logger.info(f"La película '{movie_data['title']}' existe, añadiendo nueva calidad: {movie_data['quality']}")
+        # Obtener el ID de la calidad
+        quality_id = get_quality_id(conn, movie_data['quality'])
+
+        if movie_id:
+            # La película ya existe, verificar si ya tiene esta calidad
+            if check_if_quality_link_exists(conn, movie_id, quality_id):
+                logger.info(f"La película '{movie_data['title']}' ya tiene la calidad {movie_data['quality']}")
+                conn.close()
+                return False
+
+            # Añadir nuevo enlace de torrent para esta calidad
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO torrent_files (torrent_id, episode_id, quality_id, torrent_link) VALUES (?, NULL, ?, ?)",
+                (movie_id, quality_id, movie_data['torrent_link'])
+            )
+            conn.commit()
+            logger.info(
+                f"Añadida nueva calidad {movie_data['quality']} para película existente '{movie_data['title']}'")
         else:
-            # Insertar película nueva
-            cursor.execute("INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
-                           (movie_data['title'], movie_data['year'], movie_data['genre'], movie_data['director'],
-                            'movie'))
-            torrent_id = cursor.lastrowid
-            logger.info(f"Nueva película añadida: '{movie_data['title']}' ({movie_data['year']})")
+            # Insertar nueva película
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
+                (movie_data['title'], movie_data['year'], movie_data['genre'], movie_data['director'], 'movie')
+            )
+            movie_id = cursor.lastrowid
 
-        # Insertar calidad si no existe
-        cursor.execute("INSERT OR IGNORE INTO qualities (quality) VALUES (?)", (movie_data['quality'],))
-        cursor.execute("SELECT id FROM qualities WHERE quality = ?", (movie_data['quality'],))
-        quality_id = cursor.fetchone()[0]
+            # Insertar enlace de torrent con la calidad
+            cursor.execute(
+                "INSERT INTO torrent_files (torrent_id, episode_id, quality_id, torrent_link) VALUES (?, NULL, ?, ?)",
+                (movie_id, quality_id, movie_data['torrent_link'])
+            )
+            conn.commit()
+            logger.info(f"Nueva película añadida: '{movie_data['title']}' con calidad {movie_data['quality']}")
 
-        # Insertar enlace de torrent con la calidad correspondiente
-        cursor.execute("INSERT INTO torrent_files (torrent_id, quality_id, torrent_link) VALUES (?, ?, ?)",
-                       (torrent_id, quality_id, movie_data['torrent_link']))
-
-        conn.commit()
         conn.close()
         return True
     except Exception as e:
         logger.error(f"Error al guardar en la base de datos: {str(e)}")
+        if conn:
+            conn.close()
         return False
 
 
