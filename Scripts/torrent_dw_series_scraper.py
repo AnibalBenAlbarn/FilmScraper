@@ -10,7 +10,7 @@ import json
 from requests.exceptions import RequestException, HTTPError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
+#ver:1.05
 # Asumiendo que PROJECT_ROOT está definido en main.py
 # Si no está disponible, puedes definirlo aquí
 try:
