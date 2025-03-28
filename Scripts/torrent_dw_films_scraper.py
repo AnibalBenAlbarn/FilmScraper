@@ -1,18 +1,35 @@
+import os
+import json
 import requests
 from bs4 import BeautifulSoup
 import time
 import sqlite3
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Asumiendo que PROJECT_ROOT está definido en main.py
+# Si no está disponible, puedes definirlo aquí
+try:
+    from main import PROJECT_ROOT
+except ImportError:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Asegurarse de que existe el directorio de progreso
+progress_dir = os.path.join(PROJECT_ROOT, "progress")
+os.makedirs(progress_dir, exist_ok=True)
+
+# Archivo de progreso
+progress_file = os.path.join(PROJECT_ROOT, "progress", "torrent_movie_progress.json")
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("../logs/movie_scraper.log"),
+        logging.FileHandler(os.path.join(PROJECT_ROOT, "logs", "direct_scraper_films.log")),
         logging.StreamHandler()
     ]
 )
@@ -95,16 +112,54 @@ def initialize_database():
     logger.info("Base de datos inicializada correctamente")
 
 
-def check_if_movie_exists(title, year):
-    """Verifica si la película ya existe en la base de datos."""
+def load_progress():
+    """Carga el progreso guardado desde el archivo JSON."""
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r') as f:
+                progress_data = json.load(f)
+                logger.info(
+                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, Total guardado = {progress_data.get('total_saved', 0)}")
+                return progress_data
+        except Exception as e:
+            logger.error(f"Error al cargar el archivo de progreso: {str(e)}")
+
+    # Si no hay archivo o hay un error, devolver valores predeterminados
+    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def save_progress(current_id, total_saved):
+    """Guarda el progreso actual en un archivo JSON."""
+    progress_data = {
+        "current_id": current_id,
+        "total_saved": total_saved,
+        "last_update": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    try:
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f, indent=4)
+        logger.info(f"Progreso guardado: ID actual = {current_id}, Total guardado = {total_saved}")
+    except Exception as e:
+        logger.error(f"Error al guardar el archivo de progreso: {str(e)}")
+
+
+def check_if_movie_exists_with_quality(title, year, quality):
+    """Verifica si la película ya existe en la base de datos con la misma calidad."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id FROM torrent_downloads WHERE title = ? AND year = ? AND type = 'movie'",
-                   (title, year))
-    result = cursor.fetchone()
+    cursor.execute("""
+        SELECT td.id 
+        FROM torrent_downloads td
+        JOIN torrent_files tf ON td.id = tf.torrent_id
+        JOIN qualities q ON tf.quality_id = q.id
+        WHERE td.title = ? AND td.year = ? AND td.type = 'movie' AND q.quality = ?
+    """, (title, year, quality))
 
+    result = cursor.fetchone()
     conn.close()
+
     return result is not None
 
 
@@ -126,6 +181,7 @@ def get_movie_data(movie_url):
         title = title_element.text.strip().replace("Descargar", "").replace("por Torrent", "").strip()
 
         year = genre = director = "Desconocido"
+        quality = "Unknown"  # Valor por defecto
 
         details_div = soup.find('div', class_='d-inline-block ml-2')
         if details_div:
@@ -143,6 +199,22 @@ def get_movie_data(movie_url):
                     director_element = p_tag.find('a')
                     director = director_element.text.strip() if director_element else "Desconocido"
 
+        # Buscar el formato (calidad) en el div específico
+        format_div = soup.select_one('div[style="margin-right: 0%;"].d-inline-block')
+        if format_div:
+            format_p = format_div.find('p')
+            if format_p and 'Formato:' in format_p.text:
+                quality = format_p.text.replace('Formato:', '').strip()
+                logger.info(f"Calidad encontrada: {quality}")
+
+        # Si no se encontró en el div específico, buscar en cualquier parte
+        if quality == "Unknown":
+            for p_tag in soup.find_all('p'):
+                if p_tag.find('b') and 'Formato:' in p_tag.text:
+                    quality = p_tag.text.replace('Formato:', '').strip()
+                    logger.info(f"Calidad encontrada (búsqueda alternativa): {quality}")
+                    break
+
         torrent_element = soup.find('a', href=True, id="download_torrent")
         if not torrent_element:
             logger.warning(f"No se encontró enlace de torrent en {movie_url}")
@@ -155,6 +227,7 @@ def get_movie_data(movie_url):
             'year': year,
             'genre': genre,
             'director': director,
+            'quality': quality,
             'torrent_link': torrent_link
         }
     except Exception as e:
@@ -165,26 +238,37 @@ def get_movie_data(movie_url):
 def save_to_db(movie_data):
     """Guarda los datos de una película en la base de datos."""
     try:
-        # Verificar si la película ya existe
-        if check_if_movie_exists(movie_data['title'], movie_data['year']):
-            logger.info(f"La película '{movie_data['title']}' ({movie_data['year']}) ya existe en la base de datos")
+        # Verificar si la película ya existe con la misma calidad
+        if check_if_movie_exists_with_quality(movie_data['title'], movie_data['year'], movie_data['quality']):
+            logger.info(
+                f"La película '{movie_data['title']}' ({movie_data['year']}) con calidad {movie_data['quality']} ya existe en la base de datos")
             return False
 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
+        # Verificar si la película existe pero con diferente calidad
+        cursor.execute("SELECT id FROM torrent_downloads WHERE title = ? AND year = ? AND type = 'movie'",
+                       (movie_data['title'], movie_data['year']))
+        existing_movie = cursor.fetchone()
+
+        if existing_movie:
+            torrent_id = existing_movie[0]
+            logger.info(f"La película '{movie_data['title']}' existe, añadiendo nueva calidad: {movie_data['quality']}")
+        else:
+            # Insertar película nueva
+            cursor.execute("INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
+                           (movie_data['title'], movie_data['year'], movie_data['genre'], movie_data['director'],
+                            'movie'))
+            torrent_id = cursor.lastrowid
+            logger.info(f"Nueva película añadida: '{movie_data['title']}' ({movie_data['year']})")
+
         # Insertar calidad si no existe
-        cursor.execute("INSERT OR IGNORE INTO qualities (quality) VALUES (?)", ("Unknown",))
-        cursor.execute("SELECT id FROM qualities WHERE quality = ?", ("Unknown",))
+        cursor.execute("INSERT OR IGNORE INTO qualities (quality) VALUES (?)", (movie_data['quality'],))
+        cursor.execute("SELECT id FROM qualities WHERE quality = ?", (movie_data['quality'],))
         quality_id = cursor.fetchone()[0]
 
-        # Insertar película
-        cursor.execute("INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
-                       (movie_data['title'], movie_data['year'], movie_data['genre'], movie_data['director'], 'movie'))
-        cursor.execute("SELECT last_insert_rowid()")
-        torrent_id = cursor.fetchone()[0]
-
-        # Insertar enlace de torrent
+        # Insertar enlace de torrent con la calidad correspondiente
         cursor.execute("INSERT INTO torrent_files (torrent_id, quality_id, torrent_link) VALUES (?, ?, ?)",
                        (torrent_id, quality_id, movie_data['torrent_link']))
 
@@ -198,36 +282,56 @@ def save_to_db(movie_data):
 
 def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     """Itera sobre los IDs de las películas y extrae los datos."""
+    # Cargar progreso anterior si existe
+    progress_data = load_progress()
+    current_id = progress_data.get("current_id", start_id)
+    total_saved = progress_data.get("total_saved", 0)
+
+    logger.info(f"Iniciando scraping desde ID: {current_id}, películas guardadas anteriormente: {total_saved}")
+
     consecutive_failures = 0
-    total_saved = 0
 
-    for movie_id in range(start_id, end_id + 1):
-        movie_url = f"{BASE_URL}{movie_id}/"
-        logger.info(f"Extrayendo: {movie_url}")
+    try:
+        for movie_id in range(current_id, end_id + 1):
+            movie_url = f"{BASE_URL}{movie_id}/"
+            logger.info(f"Extrayendo: {movie_url}")
 
-        movie_data = get_movie_data(movie_url)
-        if movie_data:
-            if save_to_db(movie_data):
-                logger.info(f"Guardado: {movie_data['title']} ({movie_data['year']})")
-                total_saved += 1
-                consecutive_failures = 0  # Reiniciar contador de fallos
+            movie_data = get_movie_data(movie_url)
+            if movie_data:
+                if save_to_db(movie_data):
+                    logger.info(
+                        f"Guardado: {movie_data['title']} ({movie_data['year']}) - Calidad: {movie_data['quality']}")
+                    total_saved += 1
+                    consecutive_failures = 0  # Reiniciar contador de fallos
+                else:
+                    logger.info(
+                        f"No guardado (posible duplicado): {movie_data['title']} - Calidad: {movie_data['quality']}")
             else:
-                logger.info(f"No guardado (posible duplicado): {movie_data['title']}")
-        else:
-            consecutive_failures += 1
-            logger.warning(
-                f"Película no encontrada o datos incompletos para ID: {movie_id}. Fallos consecutivos: {consecutive_failures}")
+                consecutive_failures += 1
+                logger.warning(
+                    f"Película no encontrada o datos incompletos para ID: {movie_id}. Fallos consecutivos: {consecutive_failures}")
 
-            if consecutive_failures >= max_consecutive_failures:
-                logger.error(
-                    f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
-                break
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.error(
+                        f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
+                    break
 
-        # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
-        sleep_time = 1 + (movie_id % 2)
-        time.sleep(sleep_time)
+            # Guardar progreso cada 10 películas o cuando hay un error
+            if movie_id % 10 == 0 or movie_data is None:
+                save_progress(movie_id + 1, total_saved)
 
-    logger.info(f"Proceso completado. Se guardaron {total_saved} películas en la base de datos.")
+            # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
+            sleep_time = 1 + (movie_id % 2)
+            time.sleep(sleep_time)
+
+    except KeyboardInterrupt:
+        logger.info("Script interrumpido por el usuario")
+    except Exception as e:
+        logger.critical(f"Error crítico: {str(e)}")
+    finally:
+        # Guardar progreso final
+        save_progress(current_id, total_saved)
+        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} películas en la base de datos.")
 
 
 if __name__ == "__main__":
