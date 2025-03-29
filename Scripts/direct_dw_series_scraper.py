@@ -1,24 +1,25 @@
-
 import time
 import re
 import sqlite3
 import json
 import os
 import logging
+import sys
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
-# Configuración mejorada del logging
-import logging
-import sys
 
 from main import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # Nivel más bajo para el logger
+
+# Limpiar handlers previos
+if logger.handlers:
+    logger.handlers.clear()
 
 # Handler para consola con salida a stdout
 console_handler = logging.StreamHandler(sys.stdout)
@@ -33,8 +34,7 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 console_handler.setFormatter(formatter)
 file_handler.setFormatter(formatter)
 
-# Limpiar handlers previos y añadir los nuevos
-logger.handlers = []
+# Añadir los nuevos handlers
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
 
@@ -57,16 +57,24 @@ series_url = "https://hdfull.blog/series/abc/"
 
 # Configuración de Selenium
 service = Service(
-    (os.path.join(PROJECT_ROOT, "chromedriver.exe")))  # Reemplaza 'path/to/chromedriver' con la ruta a tu chromedriver
+    (os.path.join(PROJECT_ROOT, "chromedriver.exe")))
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")  # Ejecuta Chrome en modo headless
+options.add_argument("--disable-gpu")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--window-size=1920,1080")
 driver = webdriver.Chrome(service=service, options=options)
 
-# Archivo para guardar el progreso /progres/"series_progress.json"
+# Archivo para guardar el progreso
 progress_file = (os.path.join(PROJECT_ROOT, "progress", "series_progress.json"))
 
 # Ruta de la base de datos
 db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
+
+# Contador de reinicios del script
+restart_count = 0
+MAX_RESTARTS = 3
 
 
 # Función para inicializar la base de datos
@@ -299,6 +307,29 @@ def restart_browser():
         return False
 
 
+# Función para reiniciar el script completo
+def restart_script():
+    global restart_count
+    restart_count += 1
+
+    if restart_count <= MAX_RESTARTS:
+        logger.info(f"Reiniciando el script completo (intento {restart_count}/{MAX_RESTARTS})...")
+        try:
+            # Cerrar el navegador antes de reiniciar
+            driver.quit()
+
+            # Reiniciar el script usando el mismo intérprete de Python
+            python = sys.executable
+            script = os.path.abspath(__file__)
+            os.execl(python, python, script)
+        except Exception as e:
+            logger.error(f"Error al reiniciar el script: {e}")
+            return False
+    else:
+        logger.warning(f"Se alcanzó el máximo de reinicios ({MAX_RESTARTS}). Continuando con la siguiente serie.")
+        return False
+
+
 # Función para verificar si una serie ya existe en la base de datos
 def series_exists(title, year, imdb_rating, genre):
     connection = connect_db()
@@ -484,8 +515,8 @@ def extract_season_details(season_url, season_id):
                     except Exception as e:
                         logger.error(f"Error al extraer detalles del episodio {episode_url}: {e}")
                         if attempt < 2:
-                            logger.info(f"Reintentando en 5 minutos... (Intento {attempt + 1}/3)")
-                            time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                            logger.info(f"Reintentando en 1 minuto... (Intento {attempt + 1}/3)")
+                            time.sleep(60)  # Esperar 1 minuto antes de reintentar
 
                 # Si después de 3 intentos no hay éxito, reiniciar el navegador y probar 3 veces más
                 if not success:
@@ -504,14 +535,24 @@ def extract_season_details(season_url, season_id):
                                     f"Error al extraer detalles del episodio {episode_url} después de reiniciar: {e}")
                                 if attempt < 2:
                                     logger.info(
-                                        f"Reintentando en 5 minutos... (Intento {attempt + 1}/3 después de reiniciar)")
-                                    time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                                        f"Reintentando en 1 minuto... (Intento {attempt + 1}/3 después de reiniciar)")
+                                    time.sleep(60)  # Esperar 1 minuto antes de reintentar
                     else:
-                        logger.error("No se pudo reiniciar el navegador. Pasando al siguiente episodio.")
+                        logger.error("No se pudo reiniciar el navegador.")
 
+                # Si después de todos los intentos sigue fallando, reiniciar el script completo
                 if not success:
-                    logger.warning(f"Pasando al siguiente episodio después de 6 intentos fallidos (3+3).")
-                    continue  # Pasar al siguiente episodio después de todos los intentos fallidos
+                    logger.warning("Todos los intentos fallidos. Reiniciando el script completo...")
+                    # Guardar el progreso antes de reiniciar
+                    save_progress("season_details", season_url, episode_number)
+                    # Reiniciar el script
+                    if restart_script():
+                        # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                        pass
+                    else:
+                        # Si se alcanzó el máximo de reinicios, continuar con el siguiente episodio
+                        logger.warning(f"Pasando al siguiente episodio después de {MAX_RESTARTS} reinicios fallidos.")
+                        continue
 
             except Exception as e:
                 logger.error(f"Error al procesar episodio: {e}")
@@ -663,6 +704,7 @@ def extract_series_details(series_url):
             # Primer conjunto de 3 intentos
             for attempt in range(3):
                 try:
+                    # Extraer episodios sin insertar{% code path="series_scraper.py" type="update" %}
                     # Extraer episodios sin insertar en la base de datos todavía
                     season_episodes = extract_season_details(season_url,
                                                              None)  # Pasamos None porque aún no tenemos season_id
@@ -676,8 +718,8 @@ def extract_series_details(series_url):
                 except Exception as e:
                     logger.error(f"Error al extraer detalles de la temporada {season_url}: {e}")
                     if attempt < 2:
-                        logger.info(f"Reintentando en 5 minutos... (Intento {attempt + 1}/3)")
-                        time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                        logger.info(f"Reintentando en 1 minuto... (Intento {attempt + 1}/3)")
+                        time.sleep(60)  # Esperar 1 minuto antes de reintentar
 
             # Si después de 3 intentos no hay éxito, reiniciar el navegador y probar 3 veces más
             if not success:
@@ -699,15 +741,25 @@ def extract_series_details(series_url):
                                 f"Error al extraer detalles de la temporada {season_url} después de reiniciar: {e}")
                             if attempt < 2:
                                 logger.info(
-                                    f"Reintentando en 5 minutos... (Intento {attempt + 1}/3 después de reiniciar)")
-                                time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                                    f"Reintentando en 1 minuto... (Intento {attempt + 1}/3 después de reiniciar)")
+                                time.sleep(60)  # Esperar 1 minuto antes de reintentar
                 else:
-                    logger.error("No se pudo reiniciar el navegador. Pasando a la siguiente temporada.")
+                    logger.error("No se pudo reiniciar el navegador.")
 
+            # Si después de todos los intentos sigue fallando, reiniciar el script completo
             if not success:
-                logger.warning(f"Pasando a la siguiente temporada después de 6 intentos fallidos (3+3).")
-                season_number += 1
-                continue  # Pasar a la siguiente temporada después de todos los intentos fallidos
+                logger.warning("Todos los intentos fallidos. Reiniciando el script completo...")
+                # Guardar el progreso antes de reiniciar
+                save_progress("series_details", series_url, season_number)
+                # Reiniciar el script
+                if restart_script():
+                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                    pass
+                else:
+                    # Si se alcanzó el máximo de reinicios, continuar con la siguiente temporada
+                    logger.warning(f"Pasando a la siguiente temporada después de {MAX_RESTARTS} reinicios fallidos.")
+                    season_number += 1
+                    continue
 
             season_number += 1
 
@@ -864,7 +916,8 @@ def save_progress(type_content, current_url, current_index):
         progress[type_content] = {
             'current_url': current_url,
             'current_index': current_index,
-            'last_update': time.strftime('%Y-%m-%d %H:%M:%S')
+            'last_update': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'restart_count': restart_count  # Guardar el contador de reinicios
         }
 
         with open(progress_file, 'w') as f:
@@ -884,6 +937,11 @@ def load_progress(type_content):
                 if type_content in progress:
                     logger.info(
                         f"Progreso cargado para {type_content}: índice {progress[type_content]['current_index']}")
+                    # Cargar el contador de reinicios si existe
+                    global restart_count
+                    if 'restart_count' in progress[type_content]:
+                        restart_count = progress[type_content]['restart_count']
+                        logger.info(f"Contador de reinicios cargado: {restart_count}/{MAX_RESTARTS}")
                     return progress[type_content]['current_url'], progress[type_content]['current_index']
 
         logger.info(f"No se encontró progreso para {type_content}. Comenzando desde el principio.")
@@ -939,8 +997,8 @@ def extract_series_from_page(page_url, letter):
                 except Exception as e:
                     logger.error(f"Error al extraer datos de la serie {series_url}: {e}")
                     if attempt < 2:
-                        logger.info(f"Reintentando en 2 minutos... (Intento {attempt + 1}/3)")
-                        time.sleep(120)  # Esperar 2 minutos antes de reintentar
+                        logger.info(f"Reintentando en 1 minuto... (Intento {attempt + 1}/3)")
+                        time.sleep(60)  # Esperar 1 minuto antes de reintentar
 
             # Si después de 3 intentos no hay éxito, reiniciar el navegador y probar 3 veces más
             if not success:
@@ -958,14 +1016,24 @@ def extract_series_from_page(page_url, letter):
                             logger.error(f"Error al extraer datos de la serie {series_url} después de reiniciar: {e}")
                             if attempt < 2:
                                 logger.info(
-                                    f"Reintentando en 2 minutos... (Intento {attempt + 1}/3 después de reiniciar)")
-                                time.sleep(120)  # Esperar 2 minutos antes de reintentar
+                                    f"Reintentando en 1 minuto... (Intento {attempt + 1}/3 después de reiniciar)")
+                                time.sleep(60)  # Esperar 1 minuto antes de reintentar
                 else:
-                    logger.error("No se pudo reiniciar el navegador. Pasando a la siguiente serie.")
+                    logger.error("No se pudo reiniciar el navegador.")
 
+            # Si después de todos los intentos sigue fallando, reiniciar el script completo
             if not success:
-                logger.warning(
-                    f"No se pudo extraer la serie {series_url} después de 6 intentos (3+3). Continuando con la siguiente.")
+                logger.warning("Todos los intentos fallidos. Reiniciando el script completo...")
+                # Guardar el progreso antes de reiniciar
+                save_progress(f"letter_{letter}", series_url, index)
+                # Reiniciar el script
+                if restart_script():
+                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                    pass
+                else:
+                    # Si se alcanzó el máximo de reinicios, continuar con la siguiente serie
+                    logger.warning(
+                        f"No se pudo extraer la serie {series_url} después de {MAX_RESTARTS} reinicios. Continuando con la siguiente.")
 
             # Guardar progreso después de cada serie
             save_progress(f"letter_{letter}", series_url, index)
@@ -1017,8 +1085,15 @@ def extract_all_series():
             logger.error(f"Error al procesar la letra {letter}: {e}")
             # Reiniciar el driver y la sesión
             if not restart_browser():
-                logger.error("No se pudo reiniciar la sesión después de un error. Abortando...")
-                break
+                logger.error("No se pudo reiniciar la sesión después de un error.")
+                # Intentar reiniciar el script completo
+                if restart_script():
+                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                    pass
+                else:
+                    # Si se alcanzó el máximo de reinicios, continuar con la siguiente letra
+                    logger.warning(f"Pasando a la siguiente letra después de {MAX_RESTARTS} reinicios fallidos.")
+                    continue
 
     return all_series
 
@@ -1027,11 +1102,24 @@ def extract_all_series():
 if __name__ == "__main__":
     try:
         logger.info("Iniciando el scraper de series...")
+        # Verificar si estamos en un reinicio
+        if os.path.exists(progress_file):
+            with open(progress_file, 'r') as f:
+                progress = json.load(f)
+                if 'general' in progress and 'restart_count' in progress['general']:
+                    restart_count = progress['general']['restart_count']
+                    logger.info(f"Reinicio detectado. Contador de reinicios: {restart_count}/{MAX_RESTARTS}")
+
         # Ejecutar la extracción de todas las series sin límite
         all_series = extract_all_series()
         logger.info(f"Proceso de scraping de series completado. Series extraídas: {len(all_series)}")
     except Exception as e:
         logger.critical(f"Error crítico en el scraper: {e}")
+        # Intentar reiniciar el script en caso de error crítico
+        if restart_script():
+            pass  # El script se reiniciará si es posible
+        else:
+            logger.critical("No se pudo recuperar del error crítico después de múltiples intentos.")
     finally:
         driver.quit()
         logger.info("Driver de Selenium cerrado.")
