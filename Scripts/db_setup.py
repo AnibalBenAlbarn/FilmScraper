@@ -2,28 +2,34 @@ import os
 import sqlite3
 import logging
 
+from main import PROJECT_ROOT
+
 # Configuración del logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("db_setup.log"),
+        logging.FileHandler(os.path.join(PROJECT_ROOT, "logs", "db_setup.log")),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Rutas de las bases de datos
-DIRECT_DB_PATH = r'D:\Workplace\HdfullScrappers\Scripts\direct_dw_db.db'
-TORRENT_DB_PATH = r'D:\Workplace\HdfullScrappers\Scripts\torrent_dw_db.db'
+DIRECT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
+TORRENT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_db.db")
 
-def create_direct_db():
+
+def create_direct_db(db_path=None):
     """Crea la base de datos direct_dw_db.db."""
+    if db_path is None:
+        db_path = DIRECT_DB_PATH
+
     try:
         # Asegurarse de que el directorio existe
-        os.makedirs(os.path.dirname(os.path.abspath(DIRECT_DB_PATH)), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
-        conn = sqlite3.connect(DIRECT_DB_PATH)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
         # Crear tablas
@@ -85,26 +91,39 @@ def create_direct_db():
             "duration_minutes" REAL,
             "updated_movies" INTEGER,
             "new_links" INTEGER,
-            "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY("update_date")
+        );
+        CREATE TABLE IF NOT EXISTS "episode_update_stats" (
+            "update_date" DATE PRIMARY KEY,
+            "duration_minutes" REAL,
+            "new_series" INTEGER,
+            "new_seasons" INTEGER,
+            "new_episodes" INTEGER,
+            "new_links" INTEGER,
+            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         COMMIT;
         ''')
 
         conn.close()
-        logger.info(f"Base de datos direct_dw_db.db creada correctamente en: {DIRECT_DB_PATH}")
+        logger.info(f"Base de datos direct_dw_db.db creada correctamente en: {db_path}")
         return True
     except Exception as e:
         logger.error(f"Error al crear la base de datos direct_dw_db.db: {e}")
         return False
 
-def create_torrent_db():
+
+def create_torrent_db(db_path=None):
     """Crea la base de datos torrent_dw_db.db."""
+    if db_path is None:
+        db_path = TORRENT_DB_PATH
+
     try:
         # Asegurarse de que el directorio existe
-        os.makedirs(os.path.dirname(os.path.abspath(TORRENT_DB_PATH)), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
-        conn = sqlite3.connect(TORRENT_DB_PATH)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
         # Crear tablas
@@ -155,11 +174,12 @@ def create_torrent_db():
         ''')
 
         conn.close()
-        logger.info(f"Base de datos torrent_dw_db.db creada correctamente en: {TORRENT_DB_PATH}")
+        logger.info(f"Base de datos torrent_dw_db.db creada correctamente en: {db_path}")
         return True
     except Exception as e:
         logger.error(f"Error al crear la base de datos torrent_dw_db.db: {e}")
         return False
+
 
 def main():
     print("Configurando bases de datos...")
@@ -172,6 +192,7 @@ def main():
         print("Hubo errores al crear las bases de datos. Revise el archivo de log para más detalles.")
 
     input("Presione Enter para salir...")
+
 
 if __name__ == "__main__":
     main()

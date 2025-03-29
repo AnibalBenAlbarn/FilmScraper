@@ -4,12 +4,11 @@ import sys
 import subprocess
 from pathlib import Path
 
-
 def ensure_virtualenv():
     """
     Verifica si se está ejecutando en un entorno virtual.
-    Si no es así, crea un entorno virtual en la raíz del proyecto,
-    instala los requerimientos y reinicia el script usando el intérprete del entorno virtual.
+    Si no es así, crea un entorno virtual en la raíz del proyecto, instala los requerimientos
+    y reinicia el script usando el intérprete del entorno virtual.
     """
     # Suponemos que __init__.py está en la carpeta Scripts y el requirements.txt en la raíz del proyecto.
     project_root = Path(__file__).resolve().parent.parent
@@ -59,12 +58,10 @@ def ensure_virtualenv():
     else:
         print("Entorno virtual detectado. Continuando la ejecución...")
 
-
 def main():
     # Aquí inicia el resto de tu aplicación.
     print("Ejecutando la aplicación principal.")
     # Por ejemplo, podrías iniciar el menú principal de gestión de scrapers o llamar a otra función.
-
 
 if __name__ == "__main__":
     ensure_virtualenv()
