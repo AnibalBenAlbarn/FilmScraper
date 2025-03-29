@@ -4,6 +4,8 @@ import sqlite3
 import json
 import os
 import logging
+import sys
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -11,8 +13,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from bs4 import BeautifulSoup
-# Configuración mejorada del logging
-import sys
 
 from main import PROJECT_ROOT
 
@@ -73,6 +73,10 @@ progress_file = (os.path.join(PROJECT_ROOT, "progress", "movie_progress.json"))
 
 # Ruta de la base de datos
 db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
+
+# Contador de reinicios del script
+restart_count = 0
+MAX_RESTARTS = 3
 
 
 # Función para inicializar la base de datos
@@ -464,6 +468,29 @@ def restart_browser():
         return False
 
 
+# Función para reiniciar el script completo
+def restart_script():
+    global restart_count
+    restart_count += 1
+
+    if restart_count <= MAX_RESTARTS:
+        logger.info(f"Reiniciando el script completo (intento {restart_count}/{MAX_RESTARTS})...")
+        try:
+            # Cerrar el navegador antes de reiniciar
+            driver.quit()
+
+            # Reiniciar el script usando el mismo intérprete de Python
+            python = sys.executable
+            script = os.path.abspath(__file__)
+            os.execl(python, python, script)
+        except Exception as e:
+            logger.error(f"Error al reiniciar el script: {e}")
+            return False
+    else:
+        logger.warning(f"Se alcanzó el máximo de reinicios ({MAX_RESTARTS}). Continuando con la siguiente película.")
+        return False
+
+
 # Función para contar el número total de páginas de películas
 def count_total_pages():
     try:
@@ -657,8 +684,8 @@ def extract_movies_from_page(page_url, page_number, start_id, last_movie_index=N
                 except Exception as e:
                     logger.error(f"Error al extraer datos de la película {movie_url}: {e}")
                     if attempt < 2:
-                        logger.info(f"Reintentando en 5 minutos... (Intento {attempt + 1}/3)")
-                        time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                        logger.info(f"Reintentando en 1 minuto... (Intento {attempt + 1}/3)")
+                        time.sleep(60)  # Esperar 1 minuto antes de reintentar
 
             # Si después de 3 intentos no hay éxito, reiniciar el navegador y probar 3 veces más
             if not success:
@@ -679,14 +706,24 @@ def extract_movies_from_page(page_url, page_number, start_id, last_movie_index=N
                             logger.error(f"Error al extraer datos de la película {movie_url} después de reiniciar: {e}")
                             if attempt < 2:
                                 logger.info(
-                                    f"Reintentando en 5 minutos... (Intento {attempt + 1}/3 después de reiniciar)")
-                                time.sleep(300)  # Esperar 5 minutos antes de reintentar
+                                    f"Reintentando en 1 minuto... (Intento {attempt + 1}/3 después de reiniciar)")
+                                time.sleep(60)  # Esperar 1 minuto antes de reintentar
                 else:
-                    logger.error("No se pudo reiniciar el navegador. Pasando a la siguiente película.")
+                    logger.error("No se pudo reiniciar el navegador.")
 
+            # Si después de todos los intentos sigue fallando, reiniciar el script completo
             if not success:
-                logger.warning(f"Pasando a la siguiente película después de 6 intentos fallidos (3+3).")
-                continue  # Pasar a la siguiente película después de todos los intentos fallidos
+                logger.warning("Todos los intentos fallidos. Reiniciando el script completo...")
+                # Guardar el progreso antes de reiniciar
+                save_progress(page_number, index)
+                # Reiniciar el script
+                if restart_script():
+                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                    pass
+                else:
+                    # Si se alcanzó el máximo de reinicios, continuar con la siguiente película
+                    logger.warning(f"Pasando a la siguiente película después de {MAX_RESTARTS} reinicios fallidos.")
+                    continue
 
             # Guardar el progreso después de cada película
             save_progress(page_number, index)
@@ -770,24 +807,44 @@ def extract_all_movies():
             save_progress(page_number, last_movie_index)
 
         except Exception as e:
-            logger.error(f"Error: {e}. Intentando nuevamente en 5 minutos...")
-            time.sleep(300)  # Esperar 5 minutos antes de intentar nuevamente
+            logger.error(f"Error: {e}. Intentando nuevamente en 1 minuto...")
+            time.sleep(60)  # Esperar 1 minuto antes de intentar nuevamente
 
             # Reiniciar el driver y la sesión
             if not restart_browser():
-                logger.error("No se pudo reiniciar la sesión después de un error. Abortando...")
-                break
+                logger.error("No se pudo reiniciar la sesión después de un error.")
+                # Intentar reiniciar el script completo
+                if restart_script():
+                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
+                    pass
+                else:
+                    # Si se alcanzó el máximo de reinicios, abortar
+                    logger.error("No se pudo reiniciar el script después de múltiples intentos. Abortando...")
+                    break
 
 
 # Punto de entrada principal
 if __name__ == "__main__":
     try:
         logger.info("Iniciando el scraper de películas...")
+        # Verificar si estamos en un reinicio
+        if os.path.exists(progress_file):
+            with open(progress_file, 'r') as f:
+                progress = json.load(f)
+                if 'restart_count' in progress:
+                    restart_count = progress['restart_count']
+                    logger.info(f"Reinicio detectado. Contador de reinicios: {restart_count}/{MAX_RESTARTS}")
+
         # Ejecutar la extracción de todas las películas
         extract_all_movies()
         logger.info("Proceso de scraping de películas completado.")
     except Exception as e:
         logger.critical(f"Error crítico en el scraper: {e}")
+        # Intentar reiniciar el script en caso de error crítico
+        if restart_script():
+            pass  # El script se reiniciará si es posible
+        else:
+            logger.critical("No se pudo recuperar del error crítico después de múltiples intentos.")
     finally:
         driver.quit()
         logger.info("Driver de Selenium cerrado.")
