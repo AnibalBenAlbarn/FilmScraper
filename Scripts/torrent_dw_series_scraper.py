@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+Script para actualizar series en la base de datos de torrents
+
+Este script actualiza las series en la base de datos desde el último ID registrado
+en el archivo de progreso JSON.
+
+Versión: 1.1.0 (Actualizado para incluir donTorrentId)
+"""
+
 import requests
 from bs4 import BeautifulSoup
 import sqlite3
@@ -10,7 +20,7 @@ import json
 from requests.exceptions import RequestException, HTTPError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-#ver:1.05
+
 # Asumiendo que PROJECT_ROOT está definido en main.py
 # Si no está disponible, puedes definirlo aquí
 try:
@@ -118,27 +128,35 @@ def load_progress():
             with open(progress_file, 'r') as f:
                 progress_data = json.load(f)
                 logger.info(
-                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, Total guardado = {progress_data.get('total_saved', 0)}")
+                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, "
+                    f"Total guardado = {progress_data.get('total_saved', 0)}, "
+                    f"donTorrentId = {progress_data.get('donTorrentId', 'No disponible')}"
+                )
                 return progress_data
         except Exception as e:
             logger.error(f"Error al cargar el archivo de progreso: {str(e)}")
 
     # Si no hay archivo o hay un error, devolver valores predeterminados
-    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S"), "donTorrentId": None}
 
 
-def save_progress(current_id, total_saved):
+def save_progress(current_id, total_saved, don_torrent_id=None):
     """Guarda el progreso actual en un archivo JSON."""
     progress_data = {
         "current_id": current_id,
         "total_saved": total_saved,
-        "last_update": time.strftime("%Y-%m-%d %H:%M:%S")
+        "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "donTorrentId": don_torrent_id if don_torrent_id is not None else current_id - 1
     }
 
     try:
         with open(progress_file, 'w') as f:
             json.dump(progress_data, f, indent=4)
-        logger.info(f"Progreso guardado: ID actual = {current_id}, Total guardado = {total_saved}")
+        logger.info(
+            f"Progreso guardado: ID actual = {current_id}, "
+            f"Total guardado = {total_saved}, "
+            f"donTorrentId = {progress_data['donTorrentId']}"
+        )
     except Exception as e:
         logger.error(f"Error al guardar el archivo de progreso: {str(e)}")
 
@@ -212,13 +230,15 @@ def get_soup(url, retries=3):
         except (RequestException, HTTPError) as e:
             logger.error(f"Error al solicitar URL: {e}. Reintentando...")
             time.sleep(2 + attempt * 2)  # Incrementar tiempo de espera en cada intento
+
+    logger.error(f"No se pudo obtener contenido de {url} después de {retries} intentos")
     return None
 
 
 def extract_series_info(full_title):
     """Extrae el título de la serie y el número de temporada del título completo."""
-    # Patrón para buscar "- Xª Temporada" o similar
-    season_pattern = r'[-–]\s*(\d+)[ªa°]?\s*[Tt]emporada'
+    # Patrón para detectar el númerode temporada
+    season_pattern = r'(\d+)[ªa°]?\s*[Tt]emporada'
 
     # Buscar el patrón en el título
     season_match = re.search(season_pattern, full_title)
@@ -411,7 +431,14 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
     """Itera sobre los IDs de las series y extrae los datos."""
     # Cargar progreso anterior si existe
     progress_data = load_progress()
-    current_id = progress_data.get("current_id", start_id)
+
+    # Usar donTorrentId si está disponible, de lo contrario usar current_id
+    current_id = progress_data.get("donTorrentId", None)
+    if current_id is not None:
+        current_id += 1  # Comenzar desde el siguiente ID
+    else:
+        current_id = progress_data.get("current_id", start_id)
+
     total_saved = progress_data.get("total_saved", 0)
 
     logger.info(f"Iniciando scraping desde ID: {current_id}, series guardadas anteriormente: {total_saved}")
@@ -450,7 +477,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
 
             # Guardar progreso cada 5 series o cuando hay un error
             if current_id % 5 == 0 or not success:
-                save_progress(current_id + 1, total_saved)
+                save_progress(current_id + 1, total_saved, current_id)
 
             # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
             sleep_time = 1 + random.random() * 2
@@ -463,7 +490,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
         logger.critical(f"Error crítico: {str(e)}")
     finally:
         # Guardar progreso final
-        save_progress(current_id, total_saved)
+        save_progress(current_id, total_saved, current_id - 1)
         logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} series en la base de datos.")
         conn.close()
 

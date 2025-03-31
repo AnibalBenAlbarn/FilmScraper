@@ -1,15 +1,25 @@
+#!/usr/bin/env python3
+"""
+Script para actualizar películas en la base de datos de torrents
+
+Este script actualiza las películas en la base de datos desde el último ID registrado
+en el archivo de progreso JSON.
+
+Versión: 1.1.0 (Actualizado para incluir donTorrentId)
+"""
+
 import os
 import json
-import requests
-from bs4 import BeautifulSoup
 import time
 import sqlite3
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
 from urllib3.util.retry import Retry
-#ver:1.05
+from requests.adapters import HTTPAdapter
+
 # Asumiendo que PROJECT_ROOT está definido en main.py
 # Si no está disponible, puedes definirlo aquí
 try:
@@ -119,27 +129,35 @@ def load_progress():
             with open(progress_file, 'r') as f:
                 progress_data = json.load(f)
                 logger.info(
-                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, Total guardado = {progress_data.get('total_saved', 0)}")
+                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, "
+                    f"Total guardado = {progress_data.get('total_saved', 0)}, "
+                    f"donTorrentId = {progress_data.get('donTorrentId', 'No disponible')}"
+                )
                 return progress_data
         except Exception as e:
             logger.error(f"Error al cargar el archivo de progreso: {str(e)}")
 
     # Si no hay archivo o hay un error, devolver valores predeterminados
-    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S"), "donTorrentId": None}
 
 
-def save_progress(current_id, total_saved):
+def save_progress(current_id, total_saved, don_torrent_id=None):
     """Guarda el progreso actual en un archivo JSON."""
     progress_data = {
         "current_id": current_id,
         "total_saved": total_saved,
-        "last_update": time.strftime("%Y-%m-%d %H:%M:%S")
+        "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "donTorrentId": don_torrent_id if don_torrent_id is not None else current_id - 1
     }
 
     try:
         with open(progress_file, 'w') as f:
             json.dump(progress_data, f, indent=4)
-        logger.info(f"Progreso guardado: ID actual = {current_id}, Total guardado = {total_saved}")
+        logger.info(
+            f"Progreso guardado: ID actual = {current_id}, "
+            f"Total guardado = {total_saved}, "
+            f"donTorrentId = {progress_data['donTorrentId']}"
+        )
     except Exception as e:
         logger.error(f"Error al guardar el archivo de progreso: {str(e)}")
 
@@ -249,7 +267,8 @@ def get_movie_data(movie_url):
             logger.warning(f"No se encontró enlace de torrent en {movie_url}")
             return None
 
-        torrent_link = "https:" + torrent_element['href'] if torrent_element else "No disponible"
+        torrent_link = "https:" + torrent_element['href'] if torrent_element['href'].startswith("//") else \
+        torrent_element['href']
 
         # Convertir el año a entero si es posible
         try:
@@ -327,7 +346,14 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     """Itera sobre los IDs de las películas y extrae los datos."""
     # Cargar progreso anterior si existe
     progress_data = load_progress()
-    current_id = progress_data.get("current_id", start_id)
+
+    # Usar donTorrentId si está disponible, de lo contrario usar current_id
+    current_id = progress_data.get("donTorrentId", None)
+    if current_id is not None:
+        current_id += 1  # Comenzar desde el siguiente ID
+    else:
+        current_id = progress_data.get("current_id", start_id)
+
     total_saved = progress_data.get("total_saved", 0)
 
     logger.info(f"Iniciando scraping desde ID: {current_id}, películas guardadas anteriormente: {total_saved}")
@@ -361,7 +387,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
 
             # Guardar progreso cada 10 películas o cuando hay un error
             if movie_id % 10 == 0 or movie_data is None:
-                save_progress(movie_id + 1, total_saved)
+                save_progress(movie_id + 1, total_saved, movie_id)
 
             # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
             sleep_time = 1 + (movie_id % 2)
@@ -373,7 +399,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
         logger.critical(f"Error crítico: {str(e)}")
     finally:
         # Guardar progreso final
-        save_progress(current_id, total_saved)
+        save_progress(current_id, total_saved, movie_id)
         logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} películas en la base de datos.")
 
 
