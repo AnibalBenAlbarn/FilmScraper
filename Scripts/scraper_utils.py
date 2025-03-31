@@ -5,6 +5,7 @@ import json
 import os
 import logging
 import smtplib
+import traceback
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -13,9 +14,9 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 from bs4 import BeautifulSoup
-
-from main import PROJECT_ROOT
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuración global
 BASE_URL = "https://hdfull.blog"
@@ -26,6 +27,9 @@ PASSWORD = 'Rolankor_09'
 # Configuración de paralelización
 MAX_WORKERS = 4  # Número máximo de workers para procesamiento paralelo
 MAX_RETRIES = 3  # Número máximo de reintentos para cada elemento
+
+# Ruta del proyecto
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Configuración de la base de datos
 DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
@@ -47,11 +51,15 @@ def setup_logger(name, log_file, level=logging.INFO):
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)  # Nivel base para el logger
 
+    # Crear directorio de logs si no existe
+    log_dir = os.path.join(PROJECT_ROOT, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
     # Crear handlers
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler(os.path.join(PROJECT_ROOT, "logs", log_file))
+    file_handler = logging.FileHandler(os.path.join(log_dir, log_file))
     file_handler.setLevel(level)
 
     # Crear formato y agregarlo a los handlers
@@ -73,7 +81,7 @@ def create_driver(headless=True):
     options = webdriver.ChromeOptions()
 
     if headless:
-        options.add_argument("--headless")
+        options.add_argument("--headless=new")
 
     # Reducir el uso de memoria
     options.add_argument("--js-flags=--max-old-space-size=512")
@@ -85,9 +93,18 @@ def create_driver(headless=True):
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-infobars")
 
-    service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
-    driver = webdriver.Chrome(service=service, options=options)
+    # Usar webdriver-manager para gestionar el chromedriver automáticamente
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        # Fallback a la ruta local si webdriver-manager falla
+        service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
+        driver = webdriver.Chrome(service=service, options=options)
 
     # Configurar timeouts
     driver.set_page_load_timeout(30)
@@ -132,30 +149,43 @@ def login(driver, logger):
         # Llenar formulario de login
         username_field = driver.find_element(By.NAME, "username")
         password_field = driver.find_element(By.NAME, "password")
-        login_button = driver.find_element(By.XPATH, "//a[text()='Ingresar']")
+
+        # Limpiar campos antes de enviar texto
+        username_field.clear()
+        password_field.clear()
 
         username_field.send_keys(USERNAME)
         password_field.send_keys(PASSWORD)
-        login_button.click()
+
+        # Buscar el botón de login y hacer clic
+        try:
+            login_button = driver.find_element(By.XPATH, "//a[text()='Ingresar']")
+            login_button.click()
+        except Exception:
+            # Intentar con otro selector si el primero falla
+            login_button = driver.find_element(By.CSS_SELECTOR, ".btn.btn-primary")
+            login_button.click()
 
         # Verificar que el login fue exitoso
         WebDriverWait(driver, 10).until(EC.url_changes(LOGIN_URL))
 
-        # Verificación adicional: buscar un elemento que solo aparece cuando estás logueado
+        # Verificación adicional: buscar elementos que indiquen login exitoso
         try:
             WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "user-menu"))
+                EC.any_of(
+                    EC.presence_of_element_located((By.CLASS_NAME, "user-menu")),
+                    EC.presence_of_element_located((By.CLASS_NAME, "username")),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".nav-profile-name"))
+                )
             )
-        except:
-            # Si no encuentra user-menu, buscar otro elemento que indique login exitoso
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, "username"))
-            )
+        except TimeoutException:
+            logger.warning("No se encontraron indicadores claros de login exitoso, pero la URL cambió")
 
         logger.info("Sesión iniciada correctamente")
         return True
     except Exception as e:
         logger.error(f"Error al iniciar sesión: {e}")
+        logger.debug(traceback.format_exc())
         return False
 
 
@@ -222,6 +252,7 @@ def setup_database(logger, db_path=None):
         return True
     except Exception as e:
         logger.error(f"Error al configurar la base de datos: {e}")
+        logger.debug(traceback.format_exc())
         connection.rollback()
         return False
     finally:
@@ -236,10 +267,11 @@ def save_progress(progress_file, data):
         # Asegurarse de que el directorio existe
         os.makedirs(os.path.dirname(progress_file), exist_ok=True)
 
-        with open(progress_file, 'w') as f:
-            json.dump(data, f)
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
+        print(f"Error al guardar progreso: {e}")
         return False
 
 
@@ -251,10 +283,11 @@ def load_progress(progress_file, default=None):
 
     try:
         if os.path.exists(progress_file):
-            with open(progress_file, 'r') as f:
+            with open(progress_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return default
-    except Exception:
+    except Exception as e:
+        print(f"Error al cargar progreso: {e}")
         return default
 
 
@@ -429,6 +462,7 @@ def insert_links_batch(links, logger, connection=None, db_path=None):
         return inserted_count
     except Exception as e:
         logger.error(f"Error al insertar enlaces en lote: {e}")
+        logger.debug(traceback.format_exc())
         connection.rollback()
         return 0
     finally:
@@ -448,20 +482,50 @@ def extract_links(driver, movie_id=None, episode_id=None, logger=None):
         if logger:
             logger.debug(f"Número de enlaces encontrados: {len(embed_selectors)}")
 
-        for embed_selector in embed_selectors:
+        for i, embed_selector in enumerate(embed_selectors):
             language = None
             server = None
             embedded_link = None
 
             try:
-                embed_selector.click()
-                time.sleep(1)  # Reducido para optimizar
+                # Extraer idioma y servidor antes de hacer clic
+                embed_html = embed_selector.get_attribute('outerHTML')
+                embed_soup = BeautifulSoup(embed_html, "html.parser")
+
+                if "Audio Español" in embed_soup.text:
+                    language = "Audio Español"
+                elif "Subtítulo Español" in embed_soup.text:
+                    language = "Subtítulo Español"
+                elif "Audio Latino" in embed_soup.text:
+                    language = "Audio Latino"
+
+                server_tag = embed_soup.find("b", class_="provider")
+                if server_tag:
+                    server = server_tag.text.strip().lower()
+
+                # Hacer clic en el selector
+                try:
+                    embed_selector.click()
+                    time.sleep(1)  # Esperar a que se cargue el contenido
+                except StaleElementReferenceException:
+                    # Si el elemento está obsoleto, refrescar y volver a intentar
+                    if logger:
+                        logger.warning(
+                            f"Elemento obsoleto al hacer clic en el enlace {i + 1}. Refrescando elementos...")
+                    embed_selectors = driver.find_elements(By.CLASS_NAME, 'embed-selector')
+                    if i < len(embed_selectors):
+                        embed_selector = embed_selectors[i]
+                        embed_selector.click()
+                        time.sleep(1)
+                    else:
+                        continue
             except Exception as e:
                 if logger:
-                    logger.error(f"Error al hacer clic en el embed-selector: {e}")
+                    logger.error(f"Error al hacer clic en el embed-selector {i + 1}: {e}")
                 continue
 
             try:
+                # Esperar a que aparezca el iframe
                 embed_movie = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.CLASS_NAME, 'embed-movie'))
                 )
@@ -469,23 +533,8 @@ def extract_links(driver, movie_id=None, episode_id=None, logger=None):
                 embedded_link = iframe.get_attribute('src')
             except Exception as e:
                 if logger:
-                    logger.error(f"Error al obtener el enlace embebido: {e}")
+                    logger.error(f"Error al obtener el enlace embebido {i + 1}: {e}")
                 continue
-
-            # Extraer idioma y servidor
-            embed_html = embed_selector.get_attribute('outerHTML')
-            embed_soup = BeautifulSoup(embed_html, "lxml")
-
-            if "Audio Español" in embed_soup.text:
-                language = "Audio Español"
-            elif "Subtítulo Español" in embed_soup.text:
-                language = "Subtítulo Español"
-            elif "Audio Latino" in embed_soup.text:
-                language = "Audio Latino"
-
-            server_tag = embed_soup.find("b", class_="provider")
-            if server_tag:
-                server = server_tag.text.strip().lower()
 
             # Modificar el enlace si es powvideo o streamplay
             if embedded_link and server in ["powvideo", "streamplay"]:
@@ -514,6 +563,7 @@ def extract_links(driver, movie_id=None, episode_id=None, logger=None):
     except Exception as e:
         if logger:
             logger.error(f"Error al extraer enlaces: {e}")
+            logger.debug(traceback.format_exc())
         return []
 
 
@@ -535,7 +585,7 @@ def has_next_page(page_url, driver):
         driver.get(page_url)
         time.sleep(2)  # Esperar a que se cargue la página
         page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
+        soup = BeautifulSoup(page_source, "html.parser")
 
         # Buscar el botón de siguiente página
         next_button = soup.find("a", class_="current")
@@ -689,7 +739,6 @@ def insert_series(title, year, imdb_rating=None, genre=None, connection=None, db
     if connection is None:
         connection = connect_db(db_path)
         close_connection = True
-
     cursor = connection.cursor()
     series_id = None
 
@@ -877,3 +926,92 @@ def insert_or_update_movie(movie_data, connection=None, db_path=None):
         cursor.close()
         if close_connection:
             connection.close()
+
+
+# Función para obtener episodios con scroll infinito
+def get_all_episodes_with_infinite_scroll(driver, logger, max_scroll_attempts=10):
+    """Obtiene todos los episodios de una página con scroll infinito."""
+    logger.info("Obteniendo episodios con scroll infinito...")
+
+    # Lista para almacenar los URLs de episodios
+    episode_urls = []
+
+    # Conjunto para evitar duplicados
+    seen_urls = set()
+
+    # Contador para el número de intentos de scroll sin nuevos resultados
+    no_new_results_count = 0
+
+    try:
+        # Esperar a que el contenedor de episodios esté presente
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "episodes-content"))
+        )
+
+        # Bucle para hacer scroll y obtener más episodios
+        for scroll_attempt in range(max_scroll_attempts):
+            # Obtener los episodios actuales
+            episode_divs = driver.find_elements(By.CSS_SELECTOR, "#episodes-content .span-6.tt.view.show-view")
+            current_count = len(episode_urls)
+
+            # Procesar los episodios visibles actualmente
+            for div in episode_divs:
+                try:
+                    link_tag = div.find_element(By.TAG_NAME, "a")
+                    episode_href = link_tag.get_attribute("href")
+
+                    # Añadir solo si no lo hemos visto antes
+                    if episode_href and episode_href not in seen_urls:
+                        episode_urls.append(episode_href)
+                        seen_urls.add(episode_href)
+                except Exception as e:
+                    logger.warning(f"Error al procesar un div de episodio: {e}")
+
+            # Verificar si se encontraron nuevos episodios
+            if len(episode_urls) == current_count:
+                no_new_results_count += 1
+                if no_new_results_count >= 3:  # Si no hay nuevos resultados después de 3 intentos, terminar
+                    logger.info(
+                        f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
+                    break
+            else:
+                no_new_results_count = 0  # Reiniciar contador si se encontraron nuevos episodios
+
+            # Hacer scroll hacia abajo
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            logger.debug(
+                f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
+
+            # Esperar a que se carguen más contenidos
+            time.sleep(2)
+
+        logger.info(f"Total de episodios encontrados: {len(episode_urls)}")
+        return episode_urls
+
+    except Exception as e:
+        logger.error(f"Error al obtener episodios con scroll infinito: {e}")
+        logger.debug(traceback.format_exc())
+        return episode_urls  # Devolver los episodios que se hayan podido obtener
+
+
+# Función para enviar correo con informe
+def send_email_report(subject, body, to_email, from_email, smtp_server, smtp_port, smtp_user, smtp_password):
+    """Envía un correo electrónico con el informe de actualización."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = from_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.send_message(msg)
+        server.quit()
+
+        return True
+    except Exception as e:
+        print(f"Error al enviar correo: {e}")
+        return False
