@@ -103,6 +103,9 @@ series_queue = Queue()
 # Lista para mantener referencia a todos los drivers
 all_drivers = []
 
+# Lock para el archivo de progreso
+progress_lock = Lock()
+
 
 # Función para crear un nuevo driver de Chrome
 def create_driver():
@@ -728,22 +731,41 @@ def insert_series_with_seasons_and_episodes(series_data, worker_id, username):
 
 
 # Función para guardar el progreso
-def save_progress(letter_index, processed_urls=None):
-    try:
-        progress_data = {
-            'letter_index': letter_index,
-            'processed_urls': processed_urls if processed_urls else [],
-            'last_update': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'restart_count': restart_count
-        }
+def save_progress(letter_index, pending_urls=None, completed_urls=None):
+    with progress_lock:
+        try:
+            # Cargar datos existentes si el archivo existe
+            if os.path.exists(progress_file):
+                with open(progress_file, 'r') as f:
+                    progress_data = json.load(f)
+            else:
+                progress_data = {
+                    'letter_index': 0,
+                    'pending_urls': [],
+                    'completed_urls': [],
+                    'last_update': '',
+                    'restart_count': 0
+                }
 
-        with open(progress_file, 'w') as f:
-            json.dump(progress_data, f)
-        logger.debug(
-            f"Progreso guardado: índice letra {letter_index}, URLs procesadas: {len(processed_urls) if processed_urls else 0}")
-    except Exception as e:
-        logger.error(f"Error al guardar el progreso: {e}")
+            # Actualizar datos
+            progress_data['letter_index'] = letter_index
 
+            if pending_urls is not None:
+                progress_data['pending_urls'] = pending_urls
+
+            if completed_urls is not None:
+                progress_data['completed_urls'] = completed_urls
+
+            progress_data['last_update'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+            # Guardar los datos actualizados
+            with open(progress_file, 'w') as f:
+                json.dump(progress_data, f)
+
+            logger.debug(
+                f"Progreso guardado: índice letra {letter_index}, URLs pendientes: {len(pending_urls) if pending_urls else 0}, URLs completadas: {len(completed_urls) if completed_urls else 0}")
+        except Exception as e:
+            logger.error(f"Error al guardar el progreso: {e}")
 
 # Función para cargar el progreso
 def load_progress():
@@ -752,15 +774,25 @@ def load_progress():
             with open(progress_file, 'r') as f:
                 progress = json.load(f)
                 logger.info(f"Progreso cargado: índice letra {progress['letter_index']}")
+
+                # Cargar URLs pendientes y completadas
+                pending_urls = progress.get('pending_urls', [])
+                completed_urls = progress.get('completed_urls', [])
+
+                logger.info(f"URLs pendientes cargadas: {len(pending_urls)}")
+                logger.info(f"URLs completadas cargadas: {len(completed_urls)}")
+
                 if 'restart_count' in progress:
                     global restart_count
                     restart_count = progress['restart_count']
                 logger.info(f"Contador de reinicios cargado: {restart_count}/{MAX_RESTARTS}")
-            return progress['letter_index'], progress.get('processed_urls', [])
+
+                return progress['letter_index'], pending_urls, completed_urls
     except Exception as e:
         logger.error(f"Error al cargar el progreso: {e}")
-    logger.info("No se encontró archivo de progreso. Comenzando desde el principio.")
-    return 0, []
+
+    logger.info("No se encontró archivo de progreso o hubo un error. Comenzando desde el principio.")
+    return 0, [], []
 
 
 # Función para extraer URLs de series de una página
@@ -865,7 +897,37 @@ def series_worker(worker_id):
 
                 # Si se obtuvieron los detalles de la serie, insertarlos en la base de datos
                 if success and series_details:
-                    insert_series_with_seasons_and_episodes(series_details, worker_id, username)
+                    insert_success = insert_series_with_seasons_and_episodes(series_details, worker_id, username)
+
+                    # Actualizar listas de URLs procesadas
+                    with progress_lock:
+                        # Cargar progreso actual
+                        if os.path.exists(progress_file):
+                            with open(progress_file, 'r') as f:
+                                progress_data = json.load(f)
+                                pending_urls = progress_data.get('pending_urls', [])
+                                completed_urls = progress_data.get('completed_urls', [])
+                        else:
+                            pending_urls = []
+                            completed_urls = []
+
+                        # Actualizar listas
+                        if series_url in pending_urls:
+                            pending_urls.remove(series_url)
+
+                        if insert_success and series_url not in completed_urls:
+                            completed_urls.append(series_url)
+
+                        # Guardar progreso actualizado
+                        with open(progress_file, 'w') as f:
+                            progress_data = {
+                                'letter_index': progress_data.get('letter_index', 0),
+                                'pending_urls': pending_urls,
+                                'completed_urls': completed_urls,
+                                'last_update': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                'restart_count': restart_count
+                            }
+                            json.dump(progress_data, f)
 
                 # Marcar la tarea como completada
                 series_queue.task_done()
@@ -914,13 +976,32 @@ def extract_all_series():
     alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ#")
 
     # Cargar el progreso guardado
-    letter_index, processed_urls = load_progress()
+    letter_index, pending_urls, completed_urls = load_progress()
 
     try:
         # Crear un pool de workers
         with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
             # Iniciar los workers
             workers = [executor.submit(series_worker, i + 1) for i in range(NUM_WORKERS)]
+
+            # Si hay URLs pendientes de procesamiento, añadirlas primero a la cola
+            if pending_urls:
+                logger.info(f"Añadiendo {len(pending_urls)} URLs pendientes a la cola...")
+                for i, url in enumerate(pending_urls):
+                    series_queue.put((i, url))
+                    logger.debug(f"Añadida serie pendiente {i} a la cola: {url}")
+
+                # Esperar a que se procesen las URLs pendientes
+                logger.info("Esperando a que se procesen las URLs pendientes...")
+                start_time = time.time()
+                max_wait_time = 600  # 10 minutos máximo de espera
+
+                while not series_queue.empty():
+                    if time.time() - start_time > max_wait_time:
+                        logger.warning(
+                            "Tiempo de espera excedido para las URLs pendientes. Continuando con el proceso normal.")
+                        break
+                    time.sleep(5)  # Esperar 5 segundos y verificar de nuevo
 
             # Procesar letras una por una
             for i in range(letter_index, len(alphabet)):
@@ -934,14 +1015,16 @@ def extract_all_series():
                 # Si no hay series en esta página, pasar a la siguiente letra
                 if not series_urls:
                     logger.info(f"No se encontraron series para la letra {letter}. Pasando a la siguiente.")
+                    # Actualizar el índice de letra en el archivo de progreso
+                    save_progress(i + 1, pending_urls, completed_urls)
                     continue
 
-                # Filtrar URLs ya procesadas
+                # Filtrar URLs ya completadas
                 new_urls = []
                 for index, url in series_urls:
-                    if url not in processed_urls:
+                    if url not in completed_urls and url not in pending_urls:
                         new_urls.append((index, url))
-                        processed_urls.append(url)  # Añadir a la lista de procesados
+                        pending_urls.append(url)  # Añadir a la lista de pendientes
 
                 logger.info(f"Encontradas {len(new_urls)} nuevas series para procesar con la letra {letter}")
 
@@ -951,7 +1034,7 @@ def extract_all_series():
                     logger.debug(f"Añadida serie {index} a la cola: {url}")
 
                 # Guardar el progreso después de añadir todas las URLs a la cola
-                save_progress(i, processed_urls)
+                save_progress(i, pending_urls, completed_urls)
 
                 # Esperar a que la cola esté vacía antes de pasar a la siguiente letra
                 # pero con un timeout para evitar bloqueos
@@ -964,6 +1047,17 @@ def extract_all_series():
                             f"Tiempo de espera excedido para la letra {letter}. Continuando con la siguiente letra.")
                         break
                     time.sleep(5)  # Esperar 5 segundos y verificar de nuevo
+
+                # Actualizar las listas de URLs pendientes y completadas
+                with progress_lock:
+                    if os.path.exists(progress_file):
+                        with open(progress_file, 'r') as f:
+                            progress_data = json.load(f)
+                            pending_urls = progress_data.get('pending_urls', [])
+                            completed_urls = progress_data.get('completed_urls', [])
+
+                # Actualizar el índice de letra en el archivo de progreso
+                save_progress(i + 1, pending_urls, completed_urls)
 
                 logger.info(f"Procesamiento de la letra {letter} completado o tiempo de espera excedido.")
 
@@ -987,7 +1081,7 @@ def extract_all_series():
     except Exception as e:
         logger.critical(f"Error crítico en el proceso principal: {e}")
         # Guardar el progreso antes de salir
-        save_progress(letter_index, processed_urls)
+        save_progress(letter_index, pending_urls, completed_urls)
     finally:
         # Cerrar el driver principal
         try:
@@ -1018,8 +1112,8 @@ if __name__ == "__main__":
         logger.critical(f"Error crítico en el scraper: {e}")
         # Intentar guardar el progreso antes de salir
         try:
-            letter_index, processed_urls = load_progress()
-            save_progress(letter_index, processed_urls)
+            letter_index, pending_urls, completed_urls = load_progress()
+            save_progress(letter_index, pending_urls, completed_urls)
         except:
             pass
     finally:
