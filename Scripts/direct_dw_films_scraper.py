@@ -5,7 +5,9 @@ import json
 import os
 import logging
 import sys
-import subprocess
+import concurrent.futures
+from queue import Queue
+from threading import Lock
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -14,7 +16,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from bs4 import BeautifulSoup
 
-from main import PROJECT_ROOT
+# Importar PROJECT_ROOT desde main.py
+try:
+    from main import PROJECT_ROOT
+except ImportError:
+    # Si no se puede importar, usar el directorio actual
+    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Configuración del logger para evitar duplicación
 logger = logging.getLogger("films_scraper")
@@ -25,16 +32,21 @@ logger.propagate = False  # Importante para evitar duplicación
 if logger.handlers:
     logger.handlers.clear()
 
+# Asegurar que el directorio de logs existe
+logs_dir = os.path.join(PROJECT_ROOT, "logs")
+if not os.path.exists(logs_dir):
+    os.makedirs(logs_dir)
+
 # Handler para consola con salida a stdout
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.DEBUG)
 
 # Handler para archivo
-file_handler = logging.FileHandler(os.path.join(PROJECT_ROOT, "logs", "direct_scraper_films.log"))
+file_handler = logging.FileHandler(os.path.join(logs_dir, "direct_scraper_films.log"))
 file_handler.setLevel(logging.INFO)
 
 # Formato único para ambos handlers
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
 console_handler.setFormatter(formatter)
 file_handler.setFormatter(formatter)
 
@@ -58,18 +70,13 @@ login_url = "https://hdfull.blog/login"
 base_url = "https://hdfull.blog"
 movies_url = "https://hdfull.blog/peliculas/imdb_rating"
 
-# Configuración de Selenium
-service = Service((os.path.join(PROJECT_ROOT, "chromedriver.exe")))
-options = webdriver.ChromeOptions()
-options.add_argument("--headless")  # Ejecuta Chrome en modo headless
-options.add_argument("--disable-gpu")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--window-size=1920,1080")
-driver = webdriver.Chrome(service=service, options=options)
+# Directorio para guardar el progreso
+progress_dir = os.path.join(PROJECT_ROOT, "progress")
+if not os.path.exists(progress_dir):
+    os.makedirs(progress_dir)
 
 # Archivo para guardar el progreso
-progress_file = (os.path.join(PROJECT_ROOT, "progress", "movie_progress.json"))
+progress_file = os.path.join(progress_dir, "movie_progress.json")
 
 # Ruta de la base de datos
 db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
@@ -78,110 +85,33 @@ db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
 restart_count = 0
 MAX_RESTARTS = 3
 
+# Número de workers para el scraping paralelo
+NUM_WORKERS = 4
+
+# Lock para sincronizar el acceso a la base de datos
+db_lock = Lock()
+
+# Cola para almacenar las URLs de las películas a procesar
+movie_queue = Queue()
+
+
+# Función para crear un nuevo driver de Chrome
+def create_driver():
+    service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # Ejecuta Chrome en modo headless
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    return webdriver.Chrome(service=service, options=options)
+
 
 # Función para inicializar la base de datos
 def initialize_db():
-    try:
-        connection = sqlite3.connect(db_path)
-        cursor = connection.cursor()
-
-        # Crear tablas si no existen
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS media_downloads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            year INTEGER,
-            imdb_rating REAL,
-            genre TEXT,
-            type TEXT CHECK(type IN ('movie', 'serie')),
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS servers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS qualities (
-            quality_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            quality TEXT
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS links_files_download (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            movie_id INTEGER,
-            server_id INTEGER,
-            language TEXT,
-            link TEXT,
-            quality_id INTEGER,
-            episode_id INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(movie_id) REFERENCES media_downloads(id) ON DELETE CASCADE,
-            FOREIGN KEY(server_id) REFERENCES servers(id),
-            FOREIGN KEY(quality_id) REFERENCES qualities(quality_id),
-            FOREIGN KEY(episode_id) REFERENCES series_episodes(id)
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS series_seasons (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            movie_id INTEGER,
-            season INTEGER,
-            FOREIGN KEY(movie_id) REFERENCES media_downloads(id)
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS series_episodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            season_id INTEGER,
-            episode INTEGER,
-            title TEXT,
-            FOREIGN KEY(season_id) REFERENCES series_seasons(id)
-        )
-        ''')
-
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS update_stats (
-            update_date DATE PRIMARY KEY,
-            duration_minutes REAL,
-            updated_movies INTEGER,
-            new_links INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-
-        connection.commit()
-        logger.info("Base de datos inicializada correctamente")
-        return True
-    except Exception as e:
-        logger.error(f"Error al inicializar la base de datos: {e}")
-        return False
-    finally:
-        if connection:
-            connection.close()
-
-
-# Función para conectar a la base de datos
-def connect_db():
-    try:
-        # Verificar si el archivo de la base de datos existe
-        db_exists = os.path.exists(db_path)
-
-        connection = sqlite3.connect(db_path)
-        connection.row_factory = sqlite3.Row
-
-        # Si la base de datos no existía, inicializarla
-        if not db_exists:
-            logger.info("La base de datos no existe. Creando tablas...")
+    with db_lock:
+        try:
+            connection = sqlite3.connect(db_path)
             cursor = connection.cursor()
 
             # Crear tablas si no existen
@@ -259,8 +189,21 @@ def connect_db():
             ''')
 
             connection.commit()
-            logger.info("Tablas creadas correctamente")
+            logger.info("Base de datos inicializada correctamente")
+            return True
+        except Exception as e:
+            logger.error(f"Error al inicializar la base de datos: {e}")
+            return False
+        finally:
+            if connection:
+                connection.close()
 
+
+# Función para conectar a la base de datos
+def connect_db():
+    try:
+        connection = sqlite3.connect(db_path)
+        connection.row_factory = sqlite3.Row
         logger.debug("Conexión a la base de datos establecida correctamente")
         return connection
     except Exception as e:
@@ -269,7 +212,7 @@ def connect_db():
 
 
 # Función para iniciar sesión
-def login():
+def login(driver):
     try:
         logger.info("Iniciando sesión...")
         driver.get(login_url)
@@ -291,28 +234,29 @@ def login():
 
 # Función para verificar si una película ya existe en la base de datos
 def movie_exists(title, year, imdb_rating, genre):
-    connection = connect_db()
-    cursor = connection.cursor()
-    try:
-        cursor.execute('''
-            SELECT id FROM media_downloads 
-            WHERE title=? AND year=? AND imdb_rating=? AND genre=? AND type='movie'
-        ''', (title, year, imdb_rating, genre))
-        result = cursor.fetchone()
-        exists = result is not None
-        logger.debug(
-            f"Verificación de existencia de película: {title} ({year}) - {'Existe' if exists else 'No existe'}")
-        return exists
-    except Exception as e:
-        logger.error(f"Error al verificar si la película existe: {e}")
-        return False
-    finally:
-        cursor.close()
-        connection.close()
+    with db_lock:
+        connection = connect_db()
+        cursor = connection.cursor()
+        try:
+            cursor.execute('''
+                SELECT id FROM media_downloads 
+                WHERE title=? AND year=? AND imdb_rating=? AND genre=? AND type='movie'
+            ''', (title, year, imdb_rating, genre))
+            result = cursor.fetchone()
+            exists = result is not None
+            logger.debug(
+                f"Verificación de existencia de película: {title} ({year}) - {'Existe' if exists else 'No existe'}")
+            return exists
+        except Exception as e:
+            logger.error(f"Error al verificar si la película existe: {e}")
+            return False
+        finally:
+            cursor.close()
+            connection.close()
 
 
 # Función para extraer detalles de la película
-def extract_movie_details(movie_url, movie_id):
+def extract_movie_details(driver, movie_url):
     logger.info(f"Extrayendo detalles de la película: {movie_url}")
     try:
         driver.get(movie_url)
@@ -414,7 +358,6 @@ def extract_movie_details(movie_url, movie_id):
                 # Añadir enlace a la lista
                 if server and language and embedded_link:
                     server_links.append({
-                        "movie_id": movie_id,
                         "server": server,
                         "language": language,
                         "link": embedded_link,
@@ -433,7 +376,6 @@ def extract_movie_details(movie_url, movie_id):
             logger.debug(
                 f"Detalles de la película extraídos: {title}, {year}, {imdb_rating}, {genre}, {len(server_links)} enlaces")
             return {
-                "id": movie_id,
                 "Nombre": title,
                 "Año": year,
                 "IMDB Rating": imdb_rating,
@@ -448,51 +390,85 @@ def extract_movie_details(movie_url, movie_id):
         raise
 
 
-# Función para reiniciar el navegador y la sesión
-def restart_browser():
-    global driver
-    logger.info("Reiniciando el navegador...")
-    try:
-        driver.quit()
-        time.sleep(2)  # Esperar a que se cierre correctamente
-        driver = webdriver.Chrome(service=service, options=options)
-        login_success = login()
-        if login_success:
-            logger.info("Navegador reiniciado y sesión iniciada correctamente")
-            return True
-        else:
-            logger.error("No se pudo iniciar sesión después de reiniciar el navegador")
-            return False
-    except Exception as e:
-        logger.error(f"Error al reiniciar el navegador: {e}")
+# Función para insertar datos en la base de datos
+def insert_data_into_db(movie):
+    if not movie:
+        logger.debug("No hay datos de película para insertar (posiblemente ya existe)")
         return False
 
+    with db_lock:
+        connection = connect_db()
+        cursor = connection.cursor()
 
-# Función para reiniciar el script completo
-def restart_script():
-    global restart_count
-    restart_count += 1
-
-    if restart_count <= MAX_RESTARTS:
-        logger.info(f"Reiniciando el script completo (intento {restart_count}/{MAX_RESTARTS})...")
         try:
-            # Cerrar el navegador antes de reiniciar
-            driver.quit()
+            # Iniciar transacción
+            connection.execute("BEGIN TRANSACTION")
 
-            # Reiniciar el script usando el mismo intérprete de Python
-            python = sys.executable
-            script = os.path.abspath(__file__)
-            os.execl(python, python, script)
+            # Insertar la película en la base de datos con type='movie'
+            cursor.execute('''
+                INSERT INTO media_downloads (title, year, imdb_rating, genre, type)
+                VALUES (?, ?, ?, ?, 'movie')
+            ''', (movie["Nombre"], movie["Año"], movie["IMDB Rating"], movie["Género"]))
+            movie_id = cursor.lastrowid
+
+            # Verificar que se haya insertado correctamente
+            if not movie_id:
+                logger.error(f"Error al insertar la película: {movie['Nombre']}")
+                connection.rollback()
+                return False
+
+            # Insertar los enlaces de la película
+            for link in movie["Enlaces"]:
+                # Insertar el servidor si no existe
+                cursor.execute('''
+                    INSERT OR IGNORE INTO servers (name) VALUES (?)
+                ''', (link["server"],))
+                cursor.execute('''
+                    SELECT id FROM servers WHERE name=?
+                ''', (link["server"],))
+                server_id = cursor.fetchone()['id']
+
+                # Obtener el ID de la calidad
+                cursor.execute('''
+                    SELECT quality_id FROM qualities WHERE quality=?
+                ''', (link["quality"],))
+                quality_result = cursor.fetchone()
+
+                # Si la calidad no existe, insertarla
+                if not quality_result:
+                    cursor.execute('''
+                        INSERT INTO qualities (quality) VALUES (?)
+                    ''', (link["quality"],))
+                    cursor.execute('''
+                        SELECT quality_id FROM qualities WHERE quality=?
+                    ''', (link["quality"],))
+                    quality_result = cursor.fetchone()
+
+                quality_id = quality_result['quality_id']
+
+                # Insertar el enlace en la base de datos
+                cursor.execute('''
+                    INSERT INTO links_files_download (movie_id, server_id, language, link, quality_id)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (movie_id, server_id, link["language"], link["link"], quality_id))
+                logger.debug(
+                    f"Enlace insertado: movie_id={movie_id}, server={link['server']}, language={link['language']}")
+
+            # Confirmar la transacción solo si todo fue exitoso
+            connection.commit()
+            logger.info(f"Datos insertados en la base de datos para la película: {movie['Nombre']}")
+            return True
         except Exception as e:
-            logger.error(f"Error al reiniciar el script: {e}")
+            logger.error(f"Error al insertar datos en la base de datos: {e}")
+            connection.rollback()
             return False
-    else:
-        logger.warning(f"Se alcanzó el máximo de reinicios ({MAX_RESTARTS}). Continuando con la siguiente película.")
-        return False
+        finally:
+            cursor.close()
+            connection.close()
 
 
 # Función para contar el número total de páginas de películas
-def count_total_pages():
+def count_total_pages(driver):
     try:
         logger.info("Contando el número total de páginas de películas...")
         driver.get(movies_url)
@@ -522,90 +498,14 @@ def count_total_pages():
         return None
 
 
-# Función para insertar datos en la base de datos
-def insert_data_into_db(movie):
-    if not movie:
-        logger.debug("No hay datos de película para insertar (posiblemente ya existe)")
-        return False
-
-    connection = connect_db()
-    cursor = connection.cursor()
-
-    try:
-        # Iniciar transacción
-        connection.execute("BEGIN TRANSACTION")
-
-        # Insertar la película en la base de datos con type='movie'
-        cursor.execute('''
-            INSERT INTO media_downloads (title, year, imdb_rating, genre, type)
-            VALUES (?, ?, ?, ?, 'movie')
-        ''', (movie["Nombre"], movie["Año"], movie["IMDB Rating"], movie["Género"]))
-        movie_id = cursor.lastrowid
-
-        # Verificar que se haya insertado correctamente
-        if not movie_id:
-            logger.error(f"Error al insertar la película: {movie['Nombre']}")
-            connection.rollback()
-            return False
-
-        # Insertar los enlaces de la película
-        for link in movie["Enlaces"]:
-            # Insertar el servidor si no existe
-            cursor.execute('''
-                INSERT OR IGNORE INTO servers (name) VALUES (?)
-            ''', (link["server"],))
-            cursor.execute('''
-                SELECT id FROM servers WHERE name=?
-            ''', (link["server"],))
-            server_id = cursor.fetchone()['id']
-
-            # Obtener el ID de la calidad
-            cursor.execute('''
-                SELECT quality_id FROM qualities WHERE quality=?
-            ''', (link["quality"],))
-            quality_result = cursor.fetchone()
-
-            # Si la calidad no existe, insertarla
-            if not quality_result:
-                cursor.execute('''
-                    INSERT INTO qualities (quality) VALUES (?)
-                ''', (link["quality"],))
-                cursor.execute('''
-                    SELECT quality_id FROM qualities WHERE quality=?
-                ''', (link["quality"],))
-                quality_result = cursor.fetchone()
-
-            quality_id = quality_result['quality_id']
-
-            # Insertar el enlace en la base de datos
-            cursor.execute('''
-                INSERT INTO links_files_download (movie_id, server_id, language, link, quality_id)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (movie_id, server_id, link["language"], link["link"], quality_id))
-            logger.debug(
-                f"Enlace insertado: movie_id={movie_id}, server={link['server']}, language={link['language']}")
-
-        # Confirmar la transacción solo si todo fue exitoso
-        connection.commit()
-        logger.info(f"Datos insertados en la base de datos para la película: {movie['Nombre']}")
-        return True
-    except Exception as e:
-        logger.error(f"Error al insertar datos en la base de datos: {e}")
-        connection.rollback()
-        return False
-    finally:
-        cursor.close()
-        connection.close()
-
-
-# Función para extraer todas las películas de una página
-def extract_movies_from_page(page_url, page_number, start_id, last_movie_index=None):
-    logger.info(f"Extrayendo películas de la página: {page_url}")
+# Función para extraer URLs de películas de una página
+def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
+    logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
     try:
         driver.get(page_url)
         time.sleep(2)  # Esperar a que se cargue la página
 
-        # Obtener el contenedor principal de películas (div con clase "center")
+        # Obtener el contenedor principal de películas
         try:
             center_div = driver.find_element(By.CSS_SELECTOR, "div.center")
             # Obtener todas las películas dentro del contenedor
@@ -624,16 +524,9 @@ def extract_movies_from_page(page_url, page_number, start_id, last_movie_index=N
 
         if total_movies == 0:
             logger.info(f"No se encontraron películas en la página {page_number}. Puede ser la última página.")
-            return [], -1
+            return []
 
-        movies = []
-        movie_id = start_id
-
-        # Determinar el índice inicial para el scraping
-        start_index = last_movie_index + 1 if last_movie_index is not None else 0
-        logger.debug(f"Comenzando desde el índice {start_index}")
-
-        # Guardar las URLs de las películas primero para evitar StaleElementReferenceException
+        # Guardar las URLs de las películas
         movie_urls = []
         for i in range(start_index, total_movies):
             try:
@@ -664,84 +557,15 @@ def extract_movies_from_page(page_url, page_number, start_id, last_movie_index=N
             except Exception as e:
                 logger.error(f"Error al obtener la URL de la película en el índice {i}: {e}")
 
-        # Procesar cada película usando las URLs guardadas
-        for index, movie_url in movie_urls:
-            logger.info(f"Extrayendo datos de la película {index + 1}/{total_movies}: {movie_url}")
-
-            success = False
-
-            # Primer conjunto de 3 intentos
-            for attempt in range(3):
-                try:
-                    movie_details = extract_movie_details(movie_url, movie_id)
-                    if movie_details:  # Solo procesar si la película no existe ya y tiene enlaces
-                        # Insertar inmediatamente los datos de la película
-                        if insert_data_into_db(movie_details):
-                            movies.append(movie_details)
-                            movie_id += 1
-                    success = True
-                    break  # Salir del bucle de reintentos si tiene éxito
-                except Exception as e:
-                    logger.error(f"Error al extraer datos de la película {movie_url}: {e}")
-                    if attempt < 2:
-                        logger.info(f"Reintentando en 1 minuto... (Intento {attempt + 1}/3)")
-                        time.sleep(60)  # Esperar 1 minuto antes de reintentar
-
-            # Si después de 3 intentos no hay éxito, reiniciar el navegador y probar 3 veces más
-            if not success:
-                logger.info("Reiniciando el navegador después de 3 intentos fallidos...")
-                if restart_browser():
-                    # Segundo conjunto de 3 intentos después de reiniciar el navegador
-                    for attempt in range(3):
-                        try:
-                            movie_details = extract_movie_details(movie_url, movie_id)
-                            if movie_details:  # Solo procesar si la película no existe ya y tiene enlaces
-                                # Insertar inmediatamente los datos de la película
-                                if insert_data_into_db(movie_details):
-                                    movies.append(movie_details)
-                                    movie_id += 1
-                            success = True
-                            break  # Salir del bucle de reintentos si tiene éxito
-                        except Exception as e:
-                            logger.error(f"Error al extraer datos de la película {movie_url} después de reiniciar: {e}")
-                            if attempt < 2:
-                                logger.info(
-                                    f"Reintentando en 1 minuto... (Intento {attempt + 1}/3 después de reiniciar)")
-                                time.sleep(60)  # Esperar 1 minuto antes de reintentar
-                else:
-                    logger.error("No se pudo reiniciar el navegador.")
-
-            # Si después de todos los intentos sigue fallando, reiniciar el script completo
-            if not success:
-                logger.warning("Todos los intentos fallidos. Reiniciando el script completo...")
-                # Guardar el progreso antes de reiniciar
-                save_progress(page_number, index)
-                # Reiniciar el script
-                if restart_script():
-                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
-                    pass
-                else:
-                    # Si se alcanzó el máximo de reinicios, continuar con la siguiente película
-                    logger.warning(f"Pasando a la siguiente película después de {MAX_RESTARTS} reinicios fallidos.")
-                    continue
-
-            # Guardar el progreso después de cada película
-            save_progress(page_number, index)
-
-        return movies, index if movie_urls else -1
+        return movie_urls
     except Exception as e:
-        logger.error(f"Error al extraer películas de la página {page_url}: {e}")
-        raise
+        logger.error(f"Error al extraer URLs de películas de la página {page_url}: {e}")
+        return []
 
 
 # Función para guardar el progreso
 def save_progress(page_number, last_movie_index):
     try:
-        # Asegurarse de que el directorio de progreso existe
-        progress_dir = os.path.dirname(progress_file)
-        if not os.path.exists(progress_dir):
-            os.makedirs(progress_dir)
-
         with open(progress_file, 'w') as f:
             json.dump({'page_number': page_number, 'last_movie_index': last_movie_index}, f)
         logger.debug(f"Progreso guardado: página {page_number}, índice {last_movie_index}")
@@ -765,68 +589,173 @@ def load_progress():
         return 1, None
 
 
+# Función worker para procesar películas
+def movie_worker(worker_id):
+    # Crear un driver para este worker
+    driver = create_driver()
+
+    # Iniciar sesión con este driver
+    if not login(driver):
+        logger.error(f"Worker {worker_id}: No se pudo iniciar sesión. Abortando...")
+        driver.quit()
+        return
+
+    logger.info(f"Worker {worker_id}: Iniciado y listo para procesar películas")
+
+    try:
+        while True:
+            try:
+                # Obtener una URL de película de la cola
+                index, movie_url = movie_queue.get(block=False)
+
+                logger.info(f"Worker {worker_id}: Procesando película {index}: {movie_url}")
+
+                # Intentar extraer los detalles de la película con reintentos
+                success = False
+                movie_details = None
+
+                # Primer conjunto de 3 intentos
+                for attempt in range(3):
+                    try:
+                        movie_details = extract_movie_details(driver, movie_url)
+                        success = True
+                        break  # Salir del bucle de reintentos si tiene éxito
+                    except Exception as e:
+                        logger.error(f"Worker {worker_id}: Error al extraer datos de la película {movie_url}: {e}")
+                        if attempt < 2:
+                            logger.info(f"Worker {worker_id}: Reintentando en 5 segundos... (Intento {attempt + 1}/3)")
+                            time.sleep(5)
+
+                # Si después de 3 intentos no hay éxito, reiniciar el driver y probar 3 veces más
+                if not success:
+                    logger.info(f"Worker {worker_id}: Reiniciando el driver después de 3 intentos fallidos...")
+                    driver.quit()
+                    driver = create_driver()
+                    if login(driver):
+                        # Segundo conjunto de 3 intentos después de reiniciar el driver
+                        for attempt in range(3):
+                            try:
+                                movie_details = extract_movie_details(driver, movie_url)
+                                success = True
+                                break  # Salir del bucle de reintentos si tiene éxito
+                            except Exception as e:
+                                logger.error(
+                                    f"Worker {worker_id}: Error al extraer datos de la película {movie_url} después de reiniciar: {e}")
+                                if attempt < 2:
+                                    logger.info(
+                                        f"Worker {worker_id}: Reintentando en 5 segundos... (Intento {attempt + 1}/3 después de reiniciar)")
+                                    time.sleep(5)
+                    else:
+                        logger.error(f"Worker {worker_id}: No se pudo iniciar sesión después de reiniciar el driver.")
+
+                # Si se obtuvieron los detalles de la película, insertarlos en la base de datos
+                if success and movie_details:
+                    insert_data_into_db(movie_details)
+
+                # Marcar la tarea como completada
+                movie_queue.task_done()
+
+            except Exception as e:
+                if "queue.Empty" in str(e.__class__):
+                    # La cola está vacía, esperar un poco y volver a intentar
+                    time.sleep(1)
+                    # Si la cola sigue vacía después de esperar, salir del bucle
+                    if movie_queue.empty():
+                        logger.info(f"Worker {worker_id}: No hay más películas para procesar. Finalizando.")
+                        break
+                else:
+                    logger.error(f"Worker {worker_id}: Error inesperado: {e}")
+                    time.sleep(1)
+    finally:
+        # Cerrar el driver al finalizar
+        driver.quit()
+        logger.info(f"Worker {worker_id}: Finalizado y driver cerrado.")
+
+
 # Función principal para extraer todas las páginas de películas
 def extract_all_movies():
     # Inicializar la base de datos si es necesario
     initialize_db()
 
-    if not login():
-        logger.error("No se pudo iniciar sesión. Abortando...")
+    # Crear un driver principal para la navegación por páginas
+    main_driver = create_driver()
+
+    if not login(main_driver):
+        logger.error("No se pudo iniciar sesión con el driver principal. Abortando...")
+        main_driver.quit()
         return
 
     # Contar el número total de páginas
-    total_pages = count_total_pages()
+    total_pages = count_total_pages(main_driver)
     if total_pages:
         logger.info(f"Se procesarán {total_pages} páginas en total")
     else:
         logger.warning(
             "No se pudo determinar el número total de páginas. Se procesarán hasta encontrar una página vacía.")
 
+    # Cargar el progreso guardado
     page_number, last_movie_index = load_progress()
+    start_index = 0 if last_movie_index is None else last_movie_index + 1
 
-    while True:  # Continuar hasta que se encuentre una página vacía o se alcance el número total de páginas
-        try:
-            page_url = f"{movies_url}/{page_number}" if page_number > 1 else movies_url
-            logger.info(f"Extrayendo datos de la página: {page_url}")
-            movies, last_movie_index = extract_movies_from_page(page_url, page_number, start_id=1,
-                                                                last_movie_index=last_movie_index)
+    try:
+        # Crear un pool de workers
+        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            # Iniciar los workers
+            workers = [executor.submit(movie_worker, i + 1) for i in range(NUM_WORKERS)]
 
-            # Si no hay películas en esta página, hemos llegado al final
-            if not movies and last_movie_index == -1:
-                logger.info(f"No se encontraron películas en la página {page_number}. Finalizando.")
-                break
+            # Procesar páginas una por una
+            while True:
+                page_url = f"{movies_url}/{page_number}" if page_number > 1 else movies_url
+                logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
 
-            # Si conocemos el total de páginas y hemos llegado a la última, terminar
-            if total_pages and page_number >= total_pages:
-                logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
-                break
+                # Extraer URLs de películas de la página actual
+                movie_urls = extract_movie_urls_from_page(main_driver, page_url, page_number, start_index)
 
-            # Avanzar a la siguiente página
-            last_movie_index = -1  # Resetear el índice para la siguiente página
-            page_number += 1
-            save_progress(page_number, last_movie_index)
-
-        except Exception as e:
-            logger.error(f"Error: {e}. Intentando nuevamente en 1 minuto...")
-            time.sleep(60)  # Esperar 1 minuto antes de intentar nuevamente
-
-            # Reiniciar el driver y la sesión
-            if not restart_browser():
-                logger.error("No se pudo reiniciar la sesión después de un error.")
-                # Intentar reiniciar el script completo
-                if restart_script():
-                    # Si el reinicio fue exitoso, el script se habrá reiniciado y no llegaremos aquí
-                    pass
-                else:
-                    # Si se alcanzó el máximo de reinicios, abortar
-                    logger.error("No se pudo reiniciar el script después de múltiples intentos. Abortando...")
+                # Si no hay películas en esta página, hemos llegado al final
+                if not movie_urls:
+                    logger.info(f"No se encontraron películas en la página {page_number}. Finalizando.")
                     break
+
+                # Añadir las URLs a la cola para que los workers las procesen
+                for index, url in movie_urls:
+                    movie_queue.put((index, url))
+                    logger.debug(f"Añadida película {index} a la cola: {url}")
+
+                # Guardar el progreso después de procesar cada página
+                last_movie_index = movie_urls[-1][0] if movie_urls else -1
+                save_progress(page_number, last_movie_index)
+
+                # Si conocemos el total de páginas y hemos llegado a la última, terminar
+                if total_pages and page_number >= total_pages:
+                    logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
+                    break
+
+                # Avanzar a la siguiente página
+                page_number += 1
+                start_index = 0  # Resetear el índice para la siguiente página
+
+            # Esperar a que se complete el procesamiento de todas las películas en la cola
+            logger.info("Esperando a que se completen todas las tareas en la cola...")
+            movie_queue.join()
+
+            # Cancelar los workers
+            for worker in workers:
+                worker.cancel()
+
+            logger.info("Todos los workers han finalizado.")
+
+    except Exception as e:
+        logger.critical(f"Error crítico en el proceso principal: {e}")
+    finally:
+        # Cerrar el driver{% code path="films_scraper_parallel.py" type="create" %}
+        main_driver.quit()
+        logger.info("Driver principal cerrado.")
 
 
 # Punto de entrada principal
 if __name__ == "__main__":
     try:
-        logger.info("Iniciando el scraper de películas...")
+        logger.info("Iniciando el scraper de películas con procesamiento paralelo...")
         # Verificar si estamos en un reinicio
         if os.path.exists(progress_file):
             with open(progress_file, 'r') as f:
@@ -840,11 +769,11 @@ if __name__ == "__main__":
         logger.info("Proceso de scraping de películas completado.")
     except Exception as e:
         logger.critical(f"Error crítico en el scraper: {e}")
-        # Intentar reiniciar el script en caso de error crítico
-        if restart_script():
-            pass  # El script se reiniciará si es posible
-        else:
-            logger.critical("No se pudo recuperar del error crítico después de múltiples intentos.")
+        # Intentar guardar el progreso antes de salir
+        try:
+            page_number, last_movie_index = load_progress()
+            save_progress(page_number, last_movie_index)
+        except:
+            pass
     finally:
-        driver.quit()
-        logger.info("Driver de Selenium cerrado.")
+        logger.info("Scraper finalizado.")
