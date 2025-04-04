@@ -13,7 +13,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-#ver1.7
+
+# ver1.9
 # Importar utilidades compartidas
 from scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
@@ -32,20 +33,27 @@ SERIES_BASE_URL = f"{BASE_URL}/series/imdb_rating"
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
 # Colas para comunicación entre workers
-url_queue = Queue()  # Worker 1 -> Worker 2
-series_data_queue = Queue()  # Worker 2 -> Worker 3
-processed_series_queue = Queue()  # Worker 3 -> Worker 4
+url_queue_odd = Queue()  # Worker 1 -> Worker 2/3 (páginas impares)
+url_queue_even = Queue()  # Worker 4 -> Worker 5/6 (páginas pares)
+series_data_queue_odd = Queue()  # Worker 2 -> Worker 3 (datos de series de páginas impares)
+series_data_queue_even = Queue()  # Worker 5 -> Worker 6 (datos de series de páginas pares)
+processed_series_queue = Queue()  # Worker 3/6 -> Estadísticas finales
 
 # Evento para señalizar parada
 stop_event = threading.Event()
 
-# Evento para señalizar que Worker 1 está activo
+# Eventos para señalizar que los workers están activos
 worker1_active = threading.Event()
 worker1_active.set()  # Inicialmente activo
 
-# Evento para señalizar que Worker 2 está activo
 worker2_active = threading.Event()
 worker2_active.set()  # Inicialmente activo
+
+worker4_active = threading.Event()
+worker4_active.set()  # Inicialmente activo
+
+worker5_active = threading.Event()
+worker5_active.set()  # Inicialmente activo
 
 # Contadores para estadísticas
 stats = {
@@ -84,13 +92,17 @@ def retry_operation(operation, max_retries=3, retry_delay=1):
     raise Exception("Todos los reintentos fallaron")
 
 
-# Worker 1: Obtiene URLs de series por páginas
+# Worker 1: Obtiene URLs de series por páginas impares
 def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
-    logger.info(f"Worker 1: Iniciando extracción de URLs de series desde la página {start_page}")
+    logger.info(f"Worker 1: Iniciando extracción de URLs de series desde páginas impares (inicio: {start_page})")
 
     current_page = start_page
     empty_pages_count = 0
     all_series_urls = []
+
+    # Inicializar o cargar el seguimiento de páginas
+    if 'pages_odd' not in progress_data:
+        progress_data['pages_odd'] = {}
 
     try:
         while not stop_event.is_set():
@@ -98,6 +110,13 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
             if max_pages and current_page > start_page + max_pages - 1:
                 logger.info(f"Worker 1: Se alcanzó el límite de {max_pages} páginas. Finalizando.")
                 break
+
+            # Verificar si la página ya fue procesada
+            page_key = str(current_page)
+            if page_key in progress_data['pages_odd'] and progress_data['pages_odd'][page_key].get('processed', False):
+                logger.info(f"Worker 1: Página {current_page} ya procesada anteriormente. Saltando.")
+                current_page += 2  # Incrementar en 2 para procesar solo páginas impares
+                continue
 
             # Obtener URLs de series de la página actual
             logger.info(f"Worker 1: Procesando página {current_page}")
@@ -126,8 +145,17 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
             # Añadir URLs a la lista total
             all_series_urls.extend(page_series_urls)
 
+            # Actualizar el progreso de la página
+            with progress_lock:
+                progress_data['pages_odd'][page_key] = {
+                    'processed': True,
+                    'url_count': len(page_series_urls),
+                    'urls': page_series_urls,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+
             # Cargar URLs ya procesadas
-            processed_urls = set(progress_data.get('processed_urls', []))
+            processed_urls = set(progress_data.get('processed_urls_odd', []))
 
             # Filtrar URLs ya procesadas
             new_urls = [url for url in page_series_urls if url not in processed_urls]
@@ -137,26 +165,30 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
             for url in new_urls:
                 if stop_event.is_set():
                     break
-                url_queue.put(url)
+                url_queue_odd.put(url)
                 logger.debug(f"Worker 1: URL añadida a la cola: {url}")
 
-            # Pasar a la siguiente página
-            current_page += 1
+            # Guardar progreso periódicamente
+            if current_page % 5 == 1:  # Solo para páginas impares
+                save_progress(PROGRESS_FILE, progress_data)
+
+            # Pasar a la siguiente página impar
+            current_page += 2
 
             # Pequeña pausa para no sobrecargar el servidor
             time.sleep(1)
 
             # Verificar si hay suficientes URLs en la cola para los workers
             # Si hay más de 20 URLs, hacer una pausa para permitir que los workers procesen
-            if url_queue.qsize() > 20:
+            if url_queue_odd.qsize() > 20:
                 logger.info(
-                    f"Worker 1: Haciendo pausa para permitir que los workers procesen la cola (tamaño: {url_queue.qsize()})")
+                    f"Worker 1: Haciendo pausa para permitir que los workers procesen la cola (tamaño: {url_queue_odd.qsize()})")
                 time.sleep(5)  # Pausa reducida a 5 segundos para ser más eficiente
 
         # Guardar todas las URLs en un archivo JSON para referencia
-        save_urls_to_json(all_series_urls)
+        save_urls_to_json(all_series_urls, "odd")
 
-        logger.info(f"Worker 1: Finalizado. Total de series encontradas: {len(all_series_urls)}")
+        logger.info(f"Worker 1: Finalizado. Total de series encontradas en páginas impares: {len(all_series_urls)}")
         return all_series_urls
 
     except Exception as e:
@@ -171,10 +203,121 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
         logger.info("Worker 1: Marcado como inactivo. Los demás workers continuarán hasta vaciar las colas.")
 
 
-# Función para guardar URLs en un archivo JSON
-def save_urls_to_json(all_urls):
+# Worker 4: Obtiene URLs de series por páginas pares
+def worker4_url_extractor(driver, progress_data, start_page=2, max_pages=None):
+    logger.info(f"Worker 4: Iniciando extracción de URLs de series desde páginas pares (inicio: {start_page})")
+
+    current_page = start_page
+    empty_pages_count = 0
+    all_series_urls = []
+
+    # Inicializar o cargar el seguimiento de páginas
+    if 'pages_even' not in progress_data:
+        progress_data['pages_even'] = {}
+
     try:
-        output_file = os.path.join(PROJECT_ROOT, "data", f"{SCRIPT_NAME}_urls.json")
+        while not stop_event.is_set():
+            # Si se especificó un máximo de páginas y ya lo alcanzamos, salir
+            if max_pages and current_page > start_page + max_pages - 1:
+                logger.info(f"Worker 4: Se alcanzó el límite de {max_pages} páginas. Finalizando.")
+                break
+
+            # Verificar si la página ya fue procesada
+            page_key = str(current_page)
+            if page_key in progress_data['pages_even'] and progress_data['pages_even'][page_key].get('processed', False):
+                logger.info(f"Worker 4: Página {current_page} ya procesada anteriormente. Saltando.")
+                current_page += 2  # Incrementar en 2 para procesar solo páginas pares
+                continue
+
+            # Obtener URLs de series de la página actual
+            logger.info(f"Worker 4: Procesando página {current_page}")
+            page_series_urls = get_series_urls_from_page(driver, current_page)
+
+            # Actualizar estadísticas
+            with stats_lock:
+                stats['pages_processed'] += 1
+                stats['series_found'] += len(page_series_urls)
+
+            # Si no hay series en la página, incrementar contador de páginas vacías
+            if not page_series_urls:
+                empty_pages_count += 1
+                logger.warning(
+                    f"Worker 4: Página {current_page} vacía. Contador de páginas vacías: {empty_pages_count}")
+
+                # Si encontramos 3 páginas vacías consecutivas, asumimos que no hay más series
+                if empty_pages_count >= 3:
+                    logger.info(
+                        f"Worker 4: Se encontraron {empty_pages_count} páginas vacías consecutivas. Finalizando.")
+                    break
+            else:
+                # Reiniciar contador de páginas vacías si encontramos series
+                empty_pages_count = 0
+
+            # Añadir URLs a la lista total
+            all_series_urls.extend(page_series_urls)
+
+            # Actualizar el progreso de la página
+            with progress_lock:
+                progress_data['pages_even'][page_key] = {
+                    'processed': True,
+                    'url_count': len(page_series_urls),
+                    'urls': page_series_urls,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+
+            # Cargar URLs ya procesadas
+            processed_urls = set(progress_data.get('processed_urls_even', []))
+
+            # Filtrar URLs ya procesadas
+            new_urls = [url for url in page_series_urls if url not in processed_urls]
+            logger.info(f"Worker 4: Encontrados {len(new_urls)} series nuevas en la página {current_page}")
+
+            # Poner las URLs en la cola para el Worker 5
+            for url in new_urls:
+                if stop_event.is_set():
+                    break
+                url_queue_even.put(url)
+                logger.debug(f"Worker 4: URL añadida a la cola: {url}")
+
+            # Guardar progreso periódicamente
+            if current_page % 6 == 0:  # Solo para páginas pares
+                save_progress(PROGRESS_FILE, progress_data)
+
+            # Pasar a la siguiente página par
+            current_page += 2
+
+            # Pequeña pausa para no sobrecargar el servidor
+            time.sleep(1)
+
+            # Verificar si hay suficientes URLs en la cola para los workers
+            # Si hay más de 20 URLs, hacer una pausa para permitir que los workers procesen
+            if url_queue_even.qsize() > 20:
+                logger.info(
+                    f"Worker 4: Haciendo pausa para permitir que los workers procesen la cola (tamaño: {url_queue_even.qsize()})")
+                time.sleep(5)  # Pausa reducida a 5 segundos para ser más eficiente
+
+        # Guardar todas las URLs en un archivo JSON para referencia
+        save_urls_to_json(all_series_urls, "even")
+
+        logger.info(f"Worker 4: Finalizado. Total de series encontradas en páginas pares: {len(all_series_urls)}")
+        return all_series_urls
+
+    except Exception as e:
+        logger.error(f"Worker 4: Error al extraer URLs: {e}")
+        logger.debug(traceback.format_exc())
+        with stats_lock:
+            stats['errors'] += 1
+        return all_series_urls
+    finally:
+        # Indicar que Worker 4 ha terminado
+        worker4_active.clear()
+        logger.info("Worker 4: Marcado como inactivo. Los demás workers continuarán hasta vaciar las colas.")
+
+
+# Función para guardar URLs en un archivo JSON
+def save_urls_to_json(all_urls, suffix=""):
+    try:
+        output_file = os.path.join(PROJECT_ROOT, "data", f"{SCRIPT_NAME}_urls_{suffix}.json")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
         data = {
@@ -245,18 +388,18 @@ def get_series_urls_from_page(driver, page_number):
         return []
 
 
-# Worker 2: Extrae datos de las series y verifica en la base de datos
+# Worker 2: Extrae datos de las series de páginas impares y verifica en la base de datos
 def worker2_series_extractor(driver, db_path, worker_id=0):
-    logger.info(f"Worker 2 (ID {worker_id}): Iniciando extracción de datos de series")
+    logger.info(f"Worker 2 (ID {worker_id}): Iniciando extracción de datos de series de páginas impares")
 
     while not stop_event.is_set():
         try:
             # Obtener una URL de la cola con timeout
             try:
-                series_url = url_queue.get(timeout=5)
+                series_url = url_queue_odd.get(timeout=5)
             except Empty:
                 # Si la cola está vacía y el Worker 1 ha terminado, salir
-                if url_queue.empty() and not worker1_active.is_set():
+                if url_queue_odd.empty() and not worker1_active.is_set():
                     logger.info(f"Worker 2 (ID {worker_id}): No hay más URLs para procesar y Worker 1 ha terminado")
                     break
                 # Si la cola está vacía pero Worker 1 sigue activo, esperar
@@ -272,7 +415,7 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
             if not basic_info:
                 logger.error(
                     f"Worker 2 (ID {worker_id}): No se pudo extraer información básica de la serie: {series_url}")
-                url_queue.task_done()
+                url_queue_odd.task_done()
                 continue
 
             # Verificar si la serie ya existe en la BD
@@ -289,7 +432,7 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
                     logger.info(f"Worker 2 (ID {worker_id}): Serie '{basic_info['title']}' está actualizada. Saltando.")
                     with stats_lock:
                         stats['skipped_series'] += 1
-                    url_queue.task_done()
+                    url_queue_odd.task_done()
                     continue
 
             # Si llegamos aquí, necesitamos extraer los detalles completos de la serie
@@ -302,7 +445,7 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
                     series_data["id"] = series_id
 
                 # Poner los datos en la cola para el Worker 3
-                series_data_queue.put({
+                series_data_queue_odd.put({
                     "series_url": series_url,
                     "series_data": series_data,
                     "exists": series_exists_flag
@@ -310,7 +453,7 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
                 logger.debug(f"Worker 2 (ID {worker_id}): Datos añadidos a la cola para Worker 3: {series_url}")
 
             # Marcar la tarea como completada
-            url_queue.task_done()
+            url_queue_odd.task_done()
 
         except Exception as e:
             logger.error(f"Worker 2 (ID {worker_id}): Error al procesar URL: {e}")
@@ -319,13 +462,96 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
                 stats['errors'] += 1
             # Marcar la tarea como completada para no bloquear la cola
             try:
-                url_queue.task_done()
+                url_queue_odd.task_done()
             except:
                 pass
 
     logger.info(f"Worker 2 (ID {worker_id}): Finalizado")
     # Indicar que Worker 2 ha terminado
     worker2_active.clear()
+
+
+# Worker 5: Extrae datos de las series de páginas pares y verifica en la base de datos
+def worker5_series_extractor(driver, db_path, worker_id=0):
+    logger.info(f"Worker 5 (ID {worker_id}): Iniciando extracción de datos de series de páginas pares")
+
+    while not stop_event.is_set():
+        try:
+            # Obtener una URL de la cola con timeout
+            try:
+                series_url = url_queue_even.get(timeout=5)
+            except Empty:
+                # Si la cola está vacía y el Worker 4 ha terminado, salir
+                if url_queue_even.empty() and not worker4_active.is_set():
+                    logger.info(f"Worker 5 (ID {worker_id}): No hay más URLs para procesar y Worker 4 ha terminado")
+                    break
+                # Si la cola está vacía pero Worker 4 sigue activo, esperar
+                logger.debug(f"Worker 5 (ID {worker_id}): Cola vacía, pero Worker 4 sigue activo. Esperando...")
+                time.sleep(2)
+                continue
+
+            logger.info(f"Worker 5 (ID {worker_id}): Procesando serie: {series_url}")
+
+            # Extraer información básica de la serie para verificar en la BD
+            basic_info = extract_basic_series_info(driver, series_url, worker_id)
+
+            if not basic_info:
+                logger.error(
+                    f"Worker 5 (ID {worker_id}): No se pudo extraer información básica de la serie: {series_url}")
+                url_queue_even.task_done()
+                continue
+
+            # Verificar si la serie ya existe en la BD
+            series_exists_flag, series_id = check_series_in_db(basic_info, worker_id)
+
+            if series_exists_flag:
+                logger.info(
+                    f"Worker 5 (ID {worker_id}): Serie '{basic_info['title']}' ya existe en la BD con ID {series_id}")
+
+                # Verificar si necesitamos actualizar temporadas/episodios
+                need_update = check_if_series_needs_update(driver, series_url, series_id, worker_id)
+
+                if not need_update:
+                    logger.info(f"Worker 5 (ID {worker_id}): Serie '{basic_info['title']}' está actualizada. Saltando.")
+                    with stats_lock:
+                        stats['skipped_series'] += 1
+                    url_queue_even.task_done()
+                    continue
+
+            # Si llegamos aquí, necesitamos extraer los detalles completos de la serie
+            logger.info(f"Worker 5 (ID {worker_id}): Extrayendo detalles completos de la serie: {series_url}")
+            series_data = extract_series_details(driver, series_url, basic_info, worker_id)
+
+            if series_data:
+                # Añadir el ID de la serie si ya existe
+                if series_exists_flag:
+                    series_data["id"] = series_id
+
+                # Poner los datos en la cola para el Worker 6
+                series_data_queue_even.put({
+                    "series_url": series_url,
+                    "series_data": series_data,
+                    "exists": series_exists_flag
+                })
+                logger.debug(f"Worker 5 (ID {worker_id}): Datos añadidos a la cola para Worker 6: {series_url}")
+
+            # Marcar la tarea como completada
+            url_queue_even.task_done()
+
+        except Exception as e:
+            logger.error(f"Worker 5 (ID {worker_id}): Error al procesar URL: {e}")
+            logger.debug(traceback.format_exc())
+            with stats_lock:
+                stats['errors'] += 1
+            # Marcar la tarea como completada para no bloquear la cola
+            try:
+                url_queue_even.task_done()
+            except:
+                pass
+
+    logger.info(f"Worker 5 (ID {worker_id}): Finalizado")
+    # Indicar que Worker 5 ha terminado
+    worker5_active.clear()
 
 
 # Función para extraer información básica de la serie
@@ -340,7 +566,7 @@ def extract_basic_series_info(driver, series_url, worker_id=0):
         # Esperar a que aparezca la información de la serie
         try:
             WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "summary-title"))
+                EC.presence_of_element_located((By.ID, "summary-title"))
             )
         except TimeoutException:
             logger.error(f"[Worker {worker_id}] Timeout esperando información de la serie en {series_url}")
@@ -361,39 +587,96 @@ def extract_basic_series_info(driver, series_url, worker_id=0):
         # Extraer información adicional de la serie desde show-details
         show_details = soup.find("div", class_="show-details")
 
+        # Buscar el contenedor de información detallada
+        summary_overview = soup.find("div", id="summary-overview-wrapper")
+
         series_year = None
         imdb_rating = None
         genre = None
         status = None
+        director = None
 
-        if show_details:
+        # Extraer información del contenedor principal
+        if summary_overview:
+            info_div = summary_overview.find("div")
+            if info_div:
+                # Extraer estado
+                status_p = info_div.find("p", string=lambda s: s and "Estado:" in s if s else False)
+                if status_p and status_p.find("a"):
+                    status = status_p.find("a").text.strip()
+
+                # Extraer año
+                year_p = info_div.find("p", string=lambda s: s and "Año:" in s if s else False)
+                if year_p and year_p.find("a"):
+                    try:
+                        series_year = int(year_p.find("a").text.strip())
+                    except ValueError:
+                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el año a entero")
+
+                # Extraer IMDB rating
+                imdb_p = info_div.find("p", string=lambda s: s and "IMDB Rating:" in s if s else False)
+                if imdb_p and imdb_p.find("a"):
+                    rating_text = imdb_p.find("a").text.strip().split()[0]
+                    try:
+                        imdb_rating = float(rating_text)
+                    except ValueError:
+                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
+
+                # Extraer género
+                genre_p = info_div.find("p", string=lambda s: s and "Género:" in s if s else False)
+                if genre_p:
+                    genre_tags = genre_p.find_all("a")
+                    genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
+
+                # Extraer director
+                director_p = info_div.find("p", string=lambda s: s and "Director:" in s if s else False)
+                if director_p:
+                    director_tags = director_p.find_all("a")
+                    director = ", ".join([tag.text.strip() for tag in director_tags]) if director_tags else None
+
+        # Si no se encontró información en el contenedor principal, intentar con show-details
+        if show_details and (series_year is None or imdb_rating is None or genre is None or status is None):
             # Extraer estado
-            status_p = show_details.find("p", string=lambda s: s and "Estado:" in s if s else False)
-            if status_p and status_p.find("a"):
-                status = status_p.find("a").text.strip()
+            if status is None:
+                status_p = show_details.find("p", string=lambda s: s and "Estado:" in s if s else False)
+                if status_p and status_p.find("a"):
+                    status = status_p.find("a").text.strip()
 
             # Extraer año
-            year_p = show_details.find("p", string=lambda s: s and "Año:" in s if s else False)
-            if year_p and year_p.find("a"):
-                try:
-                    series_year = int(year_p.find("a").text.strip())
-                except ValueError:
-                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el año a entero")
+            if series_year is None:
+                year_p = show_details.find("p", string=lambda s: s and "Año:" in s if s else False)
+                if year_p and year_p.find("a"):
+                    try:
+                        series_year = int(year_p.find("a").text.strip())
+                    except ValueError:
+                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el año a entero")
 
             # Extraer IMDB rating
-            imdb_p = show_details.find("p", string=lambda s: s and "IMDB Rating:" in s if s else False)
-            if imdb_p and imdb_p.find("a"):
-                rating_text = imdb_p.find("a").text.strip().split()[0]
-                try:
-                    imdb_rating = float(rating_text)
-                except ValueError:
-                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
+            if imdb_rating is None:
+                imdb_p = show_details.find("p", string=lambda s: s and "IMDB Rating:" in s if s else False)
+                if imdb_p and imdb_p.find("a"):
+                    rating_text = imdb_p.find("a").text.strip().split()[0]
+                    try:
+                        imdb_rating = float(rating_text)
+                    except ValueError:
+                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
 
             # Extraer género
-            genre_p = show_details.find("p", string=lambda s: s and "Género:" in s if s else False)
-            if genre_p:
-                genre_tags = genre_p.find_all("a")
-                genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
+            if genre is None:
+                genre_p = show_details.find("p", string=lambda s: s and "Género:" in s if s else False)
+                if genre_p:
+                    genre_tags = genre_p.find_all("a")
+                    genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
+
+            # Extraer director
+            if director is None:
+                director_p = show_details.find("p", string=lambda s: s and "Director:" in s if s else False)
+                if director_p:
+                    director_tags = director_p.find_all("a")
+                    director = ", ".join([tag.text.strip() for tag in director_tags]) if director_tags else None
+
+        logger.info(f"[Worker {worker_id}] Información básica extraída: Título={series_title}, Año={series_year}, "
+                    f"IMDB={imdb_rating}, Género={genre}, Estado={status}, Director={director}")
 
         return {
             "title": series_title,
@@ -401,7 +684,8 @@ def extract_basic_series_info(driver, series_url, worker_id=0):
             "year": series_year,
             "imdb_rating": imdb_rating,
             "genre": genre,
-            "status": status
+            "status": status,
+            "director": director
         }
 
     except Exception as e:
@@ -681,6 +965,7 @@ def extract_series_details(driver, series_url, basic_info, worker_id=0):
         imdb_rating = basic_info["imdb_rating"]
         genre = basic_info["genre"]
         status = basic_info["status"]
+        director = basic_info.get("director")
 
         # Extraer temporadas
         seasons_data = []
@@ -698,6 +983,7 @@ def extract_series_details(driver, series_url, basic_info, worker_id=0):
                 "imdb_rating": imdb_rating,
                 "genre": genre,
                 "status": status,
+                "director": director,
                 "seasons": []
             }
 
@@ -731,6 +1017,7 @@ def extract_series_details(driver, series_url, basic_info, worker_id=0):
             "imdb_rating": imdb_rating,
             "genre": genre,
             "status": status,
+            "director": director,
             "seasons": seasons_data
         }
 
@@ -781,14 +1068,29 @@ def extract_episode_links(driver, episode_url, worker_id=0):
         for i, selector_soup in enumerate(embed_selectors):
             try:
                 # Extraer información del enlace
-                # Extraer idioma
+                # Buscar el idioma en el elemento h5 con clase "left"
+                h5_left = selector_soup.find("h5", class_="left")
                 language = "Desconocido"
-                if "Audio Español" in selector_soup.text:
-                    language = "Audio Español"
-                elif "Subtítulo Español" in selector_soup.text:
-                    language = "Subtítulo Español"
-                elif "Audio Latino" in selector_soup.text:
-                    language = "Audio Latino"
+
+                if h5_left:
+                    # Buscar el elemento b con clase "key" que contiene "Idioma:"
+                    idioma_key = h5_left.find("b", class_="key", string=lambda s: s and "Idioma:" in s if s else False)
+                    if idioma_key:
+                        # El idioma está en el texto que sigue al elemento b
+                        idioma_text = idioma_key.next_sibling
+                        if idioma_text:
+                            language = idioma_text.strip()
+
+                # Si no se encontró el idioma con el método anterior, usar el método alternativo
+                if language == "Desconocido":
+                    if "Audio Español" in selector_soup.text:
+                        language = "Audio Español"
+                    elif "Subtítulo Español" in selector_soup.text:
+                        language = "Subtítulo Español"
+                    elif "Audio Latino" in selector_soup.text:
+                        language = "Audio Latino"
+                    elif "Audio Original" in selector_soup.text:
+                        language = "Audio Original"
 
                 # Extraer servidor
                 server_elem = selector_soup.find("b", class_="provider")
@@ -858,20 +1160,20 @@ def extract_episode_links(driver, episode_url, worker_id=0):
         return links
 
 
-# Worker 3: Procesa las series verificadas, extrae enlaces y los inserta en la BD
+# Worker 3: Procesa las series verificadas de páginas impares, extrae enlaces y los inserta en la BD
 def worker3_db_processor(db_path, progress_data, worker_id=0):
-    logger.info(f"Worker 3 (ID {worker_id}): Iniciando procesamiento de series en la base de datos")
+    logger.info(f"Worker 3 (ID {worker_id}): Iniciando procesamiento de series de páginas impares en la base de datos")
 
-    processed_urls = set(progress_data.get('processed_urls', []))
+    processed_urls = set(progress_data.get('processed_urls_odd', []))
 
     while not stop_event.is_set():
         try:
             # Obtener datos de la cola con timeout
             try:
-                data = series_data_queue.get(timeout=5)
+                data = series_data_queue_odd.get(timeout=5)
             except Empty:
                 # Si la cola está vacía y los workers anteriores han terminado, salir
-                if series_data_queue.empty() and (not worker1_active.is_set() and not worker2_active.is_set()):
+                if series_data_queue_odd.empty() and (not worker1_active.is_set() and not worker2_active.is_set()):
                     logger.info(
                         f"Worker 3 (ID {worker_id}): No hay más series para procesar y workers anteriores han terminado")
                     break
@@ -898,7 +1200,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
                 with stats_lock:
                     stats['series_processed'] += 1
 
-                # Poner los datos en la cola para el Worker 4
+                # Poner los datos en la cola para estadísticas finales
                 processed_series_queue.put({
                     "series_url": series_url,
                     "series_data": series_data,
@@ -908,7 +1210,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
                 # Marcar la URL como procesada
                 processed_urls.add(series_url)
                 with progress_lock:
-                    progress_data['processed_urls'] = list(processed_urls)
+                    progress_data['processed_urls_odd'] = list(processed_urls)
 
                 # Guardar progreso periódicamente
                 if len(processed_urls) % 10 == 0:
@@ -919,7 +1221,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
                     stats['errors'] += 1
 
             # Marcar la tarea como completada
-            series_data_queue.task_done()
+            series_data_queue_odd.task_done()
 
         except Exception as e:
             logger.error(f"Worker 3 (ID {worker_id}): Error al procesar serie: {e}")
@@ -928,11 +1230,88 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
                 stats['errors'] += 1
             # Marcar la tarea como completada para no bloquear la cola
             try:
-                series_data_queue.task_done()
+                series_data_queue_odd.task_done()
             except:
                 pass
 
     logger.info(f"Worker 3 (ID {worker_id}): Finalizado")
+
+
+# Worker 6: Procesa las series verificadas de páginas pares, extrae enlaces y los inserta en la BD
+def worker6_db_processor(db_path, progress_data, worker_id=0):
+    logger.info(f"Worker 6 (ID {worker_id}): Iniciando procesamiento de series de páginas pares en la base de datos")
+
+    processed_urls = set(progress_data.get('processed_urls_even', []))
+
+    while not stop_event.is_set():
+        try:
+            # Obtener datos de la cola con timeout
+            try:
+                data = series_data_queue_even.get(timeout=5)
+            except Empty:
+                # Si la cola está vacía y los workers anteriores han terminado, salir
+                if series_data_queue_even.empty() and (not worker4_active.is_set() and not worker5_active.is_set()):
+                    logger.info(
+                        f"Worker 6 (ID {worker_id}): No hay más series para procesar y workers anteriores han terminado")
+                    break
+                # Si la cola está vacía pero algún worker anterior sigue activo, esperar
+                logger.debug(
+                    f"Worker 6 (ID {worker_id}): Cola vacía, pero workers anteriores siguen activos. Esperando...")
+                time.sleep(2)
+                continue
+
+            series_url = data["series_url"]
+            series_data = data["series_data"]
+            series_exists = data.get("exists", False)
+
+            logger.info(f"Worker 6 (ID {worker_id}): Procesando serie en BD: {series_url}")
+
+            # Guardar la serie en la base de datos
+            with db_lock:
+                result = save_series_to_db(series_data, series_exists, db_path)
+
+            if result:
+                logger.info(f"Worker 6 (ID {worker_id}): Serie guardada correctamente: {series_url}")
+
+                # Actualizar estadísticas
+                with stats_lock:
+                    stats['series_processed'] += 1
+
+                # Poner los datos en la cola para estadísticas finales
+                processed_series_queue.put({
+                    "series_url": series_url,
+                    "series_data": series_data,
+                    "result": result
+                })
+
+                # Marcar la URL como procesada
+                processed_urls.add(series_url)
+                with progress_lock:
+                    progress_data['processed_urls_even'] = list(processed_urls)
+
+                # Guardar progreso periódicamente
+                if len(processed_urls) % 10 == 0:
+                    save_progress(PROGRESS_FILE, progress_data)
+            else:
+                logger.error(f"Worker 6 (ID {worker_id}): Error al guardar la serie: {series_url}")
+                with stats_lock:
+                    stats['errors'] += 1
+
+            # Marcar la tarea como completada
+            series_data_queue_even.task_done()
+
+        except Exception as e:
+            logger.error(f"Worker 6 (ID {worker_id}): Error al procesar serie: {e}")
+            logger.debug(traceback.format_exc())
+            with stats_lock:
+                stats['errors'] += 1
+            # Marcar la tarea como completada para no bloquear la cola
+            try:
+                series_data_queue_even.task_done()
+            except:
+                pass
+
+    logger.info(f"Worker 6 (ID {worker_id}): Finalizado")
 
 
 # Función para guardar una serie en la base de datos
@@ -949,6 +1328,13 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
         if series_exists:
             series_id = series_data.get("id")
             logger.info(f"Usando serie existente con ID {series_id}: {series_data['title']}")
+
+            # Actualizar información de la serie si es necesario
+            cursor.execute('''
+                UPDATE media_downloads
+                SET year=?, imdb_rating=?, genre=?, updated_at=datetime('now')
+                WHERE id=?
+            ''', (series_data["year"], series_data["imdb_rating"], series_data["genre"], series_id))
         else:
             # Insertar nueva serie
             logger.info(f"Insertando nueva serie: {series_data['title']} ({series_data['year']})")
@@ -1040,7 +1426,7 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
 
                         # Verificar si el enlace ya existe
                         cursor.execute(
-                             "SELECT id FROM links_files_download WHERE episode_id = ? AND server_id = ? AND link = ?",
+                            "SELECT id FROM links_files_download WHERE episode_id = ? AND server_id = ? AND link = ?",
                             (episode_id, server_id, link_data["url"])
                         )
                         link_exists = cursor.fetchone()
@@ -1077,59 +1463,6 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
         connection.close()
 
 
-# Worker 4: Ayuda a los otros workers según sea necesario
-def worker4_helper(db_path, progress_data, worker_id=0):
-    logger.info(f"Worker 4 (ID {worker_id}): Iniciando ayuda a otros workers")
-
-    while not stop_event.is_set():
-        try:
-            # Obtener datos de la cola con timeout
-            try:
-                data = processed_series_queue.get(timeout=5)
-            except Empty:
-                # Si la cola está vacía y los workers anteriores han terminado, salir
-                if (processed_series_queue.empty() and series_data_queue.empty() and
-                        (not worker1_active.is_set() and not worker2_active.is_set())):
-                    logger.info(
-                        f"Worker 4 (ID {worker_id}): No hay más tareas para procesar y workers anteriores han terminado")
-                    break
-                # Si la cola está vacía pero algún worker anterior sigue activo, esperar
-                logger.debug(
-                    f"Worker 4 (ID {worker_id}): Cola vacía, pero workers anteriores siguen activos. Esperando...")
-                time.sleep(2)
-                continue
-
-            series_url = data["series_url"]
-            series_data = data["series_data"]
-
-            logger.info(f"Worker 4 (ID {worker_id}): Ayudando con tareas adicionales para: {series_url}")
-
-            # Aquí puedes implementar tareas adicionales como:
-            # - Extraer enlaces de streaming
-            # - Descargar imágenes
-            # - Generar estadísticas adicionales
-            # - Etc.
-
-            # Por ahora, simplemente registramos que la serie fue procesada completamente
-            logger.info(f"Worker 4 (ID {worker_id}): Serie procesada completamente: {series_url}")
-
-            # Marcar la tarea como completada
-            processed_series_queue.task_done()
-
-        except Exception as e:
-            logger.error(f"Worker 4 (ID {worker_id}): Error al procesar tarea: {e}")
-            logger.debug(traceback.format_exc())
-            with stats_lock:
-                stats['errors'] += 1
-            # Marcar la tarea como completada para no bloquear la cola
-            try:
-                processed_series_queue.task_done()
-            except:
-                pass
-
-    logger.info(f"Worker 4 (ID {worker_id}): Finalizado")
-
-
 # Función para generar informe de actualización
 def generate_update_report(start_time):
     end_time = datetime.now()
@@ -1163,11 +1496,14 @@ Este es un mensaje automático generado por el sistema de actualización de seri
 
 
 # Función principal para procesar todas las series
-def process_all_series(start_page=1, max_pages=None, db_path=None):
+def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=None):
     """Procesa todas las series disponibles."""
-    global worker2_drivers
     start_time = datetime.now()
     logger.info(f"Iniciando procesamiento de series: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Usar el número de workers especificado o el valor por defecto
+    if max_workers is None:
+        max_workers = MAX_WORKERS
 
     try:
         # Configurar la base de datos
@@ -1180,29 +1516,48 @@ def process_all_series(start_page=1, max_pages=None, db_path=None):
         progress_data = load_progress(PROGRESS_FILE, {})
 
         # Crear drivers para los workers
-        main_driver = create_driver()  # Para Worker 1
-        worker2_drivers = []  # Para Worker 2
+        driver_odd = create_driver()  # Para Worker 1 (páginas impares)
+        driver_even = create_driver()  # Para Worker 4 (páginas pares)
+        driver_worker2 = create_driver()  # Para Worker 2 (procesa series de páginas impares)
+        driver_worker5 = create_driver()  # Para Worker 5 (procesa series de páginas pares)
 
-        # Primero hacer login con el driver principal
-        if not login(main_driver, logger):
-            logger.error("No se pudo iniciar sesión. Abortando procesamiento de series.")
-            main_driver.quit()
+        # Iniciar sesión con todos los drivers
+        if not login(driver_odd, logger):
+            logger.error("No se pudo iniciar sesión con driver_odd. Abortando procesamiento de series.")
+            driver_odd.quit()
+            driver_even.quit()
+            driver_worker2.quit()
+            driver_worker5.quit()
             return
 
-        # Crear y configurar drivers para Worker 2 (2 instancias)
-        for i in range(2):
-            driver = create_driver()
-            if login(driver, logger):
-                worker2_drivers.append(driver)
-            else:
-                logger.error(
-                    f"No se pudo iniciar sesión para Worker 2 (instancia {i + 1}). Continuando con menos workers.")
-                driver.quit()
+        if not login(driver_even, logger):
+            logger.error("No se pudo iniciar sesión con driver_even. Abortando procesamiento de series.")
+            driver_odd.quit()
+            driver_even.quit()
+            driver_worker2.quit()
+            driver_worker5.quit()
+            return
+
+        if not login(driver_worker2, logger):
+            logger.error("No se pudo iniciar sesión con driver_worker2. Abortando procesamiento de series.")
+            driver_odd.quit()
+            driver_even.quit()
+            driver_worker2.quit()
+            driver_worker5.quit()
+            return
+
+        if not login(driver_worker5, logger):
+            logger.error("No se pudo iniciar sesión con driver_worker5. Abortando procesamiento de series.")
+            driver_odd.quit()
+            driver_even.quit()
+            driver_worker2.quit()
+            driver_worker5.quit()
+            return
 
         # Iniciar todos los workers en paralelo
         threads = []
 
-        # Iniciar Worker 3 (Procesador de BD) primero para que esté listo para procesar datos
+        # Iniciar Worker 3 (Procesador de BD para páginas impares)
         thread = threading.Thread(
             target=worker3_db_processor,
             args=(db_path, progress_data, 1),
@@ -1211,30 +1566,47 @@ def process_all_series(start_page=1, max_pages=None, db_path=None):
         threads.append(thread)
         thread.start()
 
-        # Iniciar Worker 4 (Ayudante) también para que esté listo
+        # Iniciar Worker 6 (Procesador de BD para páginas pares)
         thread = threading.Thread(
-            target=worker4_helper,
+            target=worker6_db_processor,
             args=(db_path, progress_data, 1),
-            name="Worker4-1"
+            name="Worker6-1"
         )
         threads.append(thread)
         thread.start()
 
-        # Iniciar Worker 2 (Extractor de datos de series)
-        for i, driver in enumerate(worker2_drivers):
-            thread = threading.Thread(
-                target=worker2_series_extractor,
-                args=(driver, db_path, i + 1),
-                name=f"Worker2-{i + 1}"
-            )
-            threads.append(thread)
-            thread.start()
+        # Iniciar Worker 2 (Extractor de datos de series de páginas impares)
+        thread = threading.Thread(
+            target=worker2_series_extractor,
+            args=(driver_worker2, db_path, 1),
+            name="Worker2-1"
+        )
+        threads.append(thread)
+        thread.start()
 
-        # Iniciar Worker 1 (Extractor de URLs) al final
+        # Iniciar Worker 5 (Extractor de datos de series de páginas pares)
+        thread = threading.Thread(
+            target=worker5_series_extractor,
+            args=(driver_worker5, db_path, 1),
+            name="Worker5-1"
+        )
+        threads.append(thread)
+        thread.start()
+
+        # Iniciar Worker 1 (Extractor de URLs de páginas impares)
         thread = threading.Thread(
             target=worker1_url_extractor,
-            args=(main_driver, progress_data, start_page, max_pages),
+            args=(driver_odd, progress_data, start_page, max_pages),
             name="Worker1"
+        )
+        threads.append(thread)
+        thread.start()
+
+        # Iniciar Worker 4 (Extractor de URLs de páginas pares)
+        thread = threading.Thread(
+            target=worker4_url_extractor,
+            args=(driver_even, progress_data, start_page + 1, max_pages),
+            name="Worker4"
         )
         threads.append(thread)
         thread.start()
@@ -1244,9 +1616,10 @@ def process_all_series(start_page=1, max_pages=None, db_path=None):
             thread.join()
 
         # Cerrar todos los drivers
-        main_driver.quit()
-        for driver in worker2_drivers:
-            driver.quit()
+        driver_odd.quit()
+        driver_even.quit()
+        driver_worker2.quit()
+        driver_worker5.quit()
 
         # Guardar progreso final
         save_progress(PROGRESS_FILE, progress_data)
@@ -1265,12 +1638,14 @@ def process_all_series(start_page=1, max_pages=None, db_path=None):
     finally:
         # Asegurarse de que todos los drivers se cierren
         try:
-            if 'main_driver' in locals() and main_driver:
-                main_driver.quit()
-
-            if 'worker2_drivers' in locals():
-                for driver in worker2_drivers:
-                    driver.quit()
+            if 'driver_odd' in locals() and driver_odd:
+                driver_odd.quit()
+            if 'driver_even' in locals() and driver_even:
+                driver_even.quit()
+            if 'driver_worker2' in locals() and driver_worker2:
+                driver_worker2.quit()
+            if 'driver_worker5' in locals() and driver_worker5:
+                driver_worker5.quit()
         except:
             pass
 
@@ -1289,8 +1664,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Actualizar configuración de paralelización si se especifica
-    if args.max_workers:
-        MAX_WORKERS = args.max_workers
+    max_workers = args.max_workers if args.max_workers else MAX_WORKERS
 
     # Reiniciar progreso si se solicita
     if args.reset_progress and os.path.exists(PROGRESS_FILE):
@@ -1298,4 +1672,4 @@ if __name__ == "__main__":
         logger.info("Progreso reiniciado. Se procesarán todas las series.")
 
     # Ejecutar el procesamiento de series
-    process_all_series(args.start_page, args.max_pages, args.db_path)
+    process_all_series(args.start_page, args.max_pages, args.db_path, max_workers)
