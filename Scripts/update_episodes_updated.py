@@ -3,6 +3,7 @@ import re
 import concurrent.futures
 import argparse
 import os
+import traceback
 from datetime import datetime
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
@@ -29,6 +30,7 @@ UPDATED_EPISODES_URL = f"{BASE_URL}/episodios#updated"
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
+
 # Función para obtener URLs de episodios de la página de actualizados
 def get_episode_urls_from_updated_page(driver):
     logger.info("Obteniendo URLs de episodios actualizados...")
@@ -47,25 +49,68 @@ def get_episode_urls_from_updated_page(driver):
             logger.warning(f"No se pudo hacer clic en la pestaña 'Actualizados': {e}")
             # Continuamos de todos modos, ya que podríamos estar ya en la pestaña correcta
 
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
+        # Esperar a que aparezca el contenedor de episodios
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "episodes-content"))
+            )
+        except Exception as e:
+            logger.error(f"Timeout esperando el contenedor de episodios: {e}")
+            return []
 
-        # Buscar todos los divs de los episodios
-        episode_divs = soup.find_all("div", class_="span-6 tt view show-view")
-        logger.info(f"Encontrados {len(episode_divs)} episodios actualizados")
-
+        # Obtener todos los episodios con scroll infinito
         episode_urls = []
-        for episode_div in episode_divs:
-            link_tag = episode_div.find("a", href=re.compile(r"/episodio/"))
-            if link_tag:
-                episode_href = link_tag['href']
-                episode_url = BASE_URL + episode_href
-                episode_urls.append(episode_url)
+        last_count = 0
+        no_new_results_count = 0
+        max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
 
+        # Conjunto para evitar duplicados
+        seen_urls = set()
+
+        # Bucle para hacer scroll hasta que no haya más episodios
+        while True:
+            # Obtener los episodios actuales
+            page_source = driver.page_source
+            soup = BeautifulSoup(page_source, "html.parser")
+            episode_divs = soup.find_all("div", class_="span-6 tt view show-view")
+
+            # Procesar los episodios visibles actualmente
+            for episode_div in episode_divs:
+                link_tag = episode_div.find("a", href=re.compile(r"/episodio/"))
+                if link_tag:
+                    episode_href = link_tag['href']
+                    episode_url = BASE_URL + episode_href if not episode_href.startswith('http') else episode_href
+
+                    # Añadir solo si no lo hemos visto antes
+                    if episode_url not in seen_urls:
+                        episode_urls.append(episode_url)
+                        seen_urls.add(episode_url)
+
+            # Verificar si se encontraron nuevos episodios
+            if len(episode_urls) == last_count:
+                no_new_results_count += 1
+                if no_new_results_count >= max_no_new_results:  # Si no hay nuevos resultados después de varios intentos, terminar
+                    logger.info(
+                        f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
+                    break
+            else:
+                no_new_results_count = 0  # Reiniciar contador si se encontraron nuevos episodios
+                last_count = len(episode_urls)
+
+            # Hacer scroll hacia abajo
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            logger.debug(f"Scroll realizado: {len(episode_urls)} episodios encontrados")
+
+            # Esperar a que se carguen más contenidos
+            time.sleep(2)
+
+        logger.info(f"Se encontraron {len(episode_urls)} episodios actualizados")
         return episode_urls
     except Exception as e:
         logger.error(f"Error al obtener URLs de episodios actualizados: {e}")
+        logger.debug(traceback.format_exc())
         return []
+
 
 # Función para extraer detalles del episodio
 def extract_episode_details(episode_url, worker_id=0, db_path=None):
@@ -83,36 +128,46 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
 
         driver.get(episode_url)
         time.sleep(1.5)  # Reducido para optimizar
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
 
-        # Extraer información de la serie
-        series_info = soup.find("div", class_="show-data")
+        # Esperar a que aparezca la información del episodio
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "show-details"))
+            )
+        except Exception as e:
+            logger.error(f"[Worker {worker_id}] Timeout esperando información del episodio en {episode_url}: {e}")
+            driver.quit()
+            return None
+
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Extraer información de la serie desde el div summary-title-wrapper
+        series_info = soup.find("div", class_="summary-title-wrapper")
         if not series_info:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar información de la serie en {episode_url}")
             driver.quit()
             return None
 
         # Extraer título de la serie
-        series_title_tag = series_info.find("a", href=re.compile(r"/serie/"))
-        if not series_title_tag:
+        series_title_div = series_info.find("div", id="summary-title")
+        if not series_title_div:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar el título de la serie en {episode_url}")
             driver.quit()
             return None
 
-        series_title = series_title_tag.text.strip()
-        series_url = BASE_URL + series_title_tag['href']
+        series_title = series_title_div.text.strip()
 
-        # Extraer información del episodio
-        episode_info = soup.find("div", id="summary-title")
-        if not episode_info:
+        # Extraer información del episodio desde el span subtitle
+        subtitle_span = series_info.find("span", class_="subtitle")
+        if not subtitle_span:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar información del episodio en {episode_url}")
             driver.quit()
             return None
 
-        # El formato suele ser "1x01 - Título del episodio"
-        episode_info_text = episode_info.text.strip()
-        episode_match = re.match(r'(\d+)x(\d+)\s*-\s*(.*)', episode_info_text)
+        # El formato suele ser "2x05 Episodio 5"
+        episode_info_text = subtitle_span.text.strip()
+        episode_match = re.match(r'(\d+)\s*x\s*(\d+)\s*(.*)', episode_info_text)
 
         if not episode_match:
             logger.error(f"[Worker {worker_id}] No se pudo extraer la información del episodio: {episode_info_text}")
@@ -123,43 +178,50 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
         episode_number = int(episode_match.group(2))
         episode_title = episode_match.group(3).strip()
 
+        if not episode_title:
+            # Intentar obtener el título del episodio de los metadatos
+            meta_title = soup.find("meta", {"itemprop": "name", "content": lambda x: x and x != series_title})
+            if meta_title:
+                episode_title = meta_title["content"].strip()
+            else:
+                episode_title = f"Episodio {episode_number}"
+
         logger.info(
             f"[Worker {worker_id}] Información extraída: Serie={series_title}, Temporada={season_number}, Episodio={episode_number}, Título={episode_title}")
 
-        # Extraer año de la serie (necesitamos visitar la página de la serie)
+        # Extraer información adicional de la serie desde show-details
+        show_details = soup.find("div", class_="show-details")
+
         series_year = None
         imdb_rating = None
         genre = None
 
-        try:
-            driver.get(series_url)
-            time.sleep(1.5)  # Reducido para optimizar
-            series_page_source = driver.page_source
-            series_soup = BeautifulSoup(series_page_source, "lxml")
-
-            show_details = series_soup.find("div", class_="show-details")
-            if show_details:
-                year_tag = show_details.find("a", href=re.compile(r"/buscar/year/"))
-                if year_tag:
-                    series_year = int(year_tag.text.strip())
+        if show_details:
+            # Extraer año
+            year_p = show_details.find("p", string=lambda s: s and "Año:" in s if s else False)
+            if year_p and year_p.find("a"):
+                try:
+                    series_year = int(year_p.find("a").text.strip())
                     logger.debug(f"[Worker {worker_id}] Año de la serie extraído: {series_year}")
+                except ValueError:
+                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el año a entero")
 
-                # También podemos extraer rating y género mientras estamos aquí
-                imdb_rating_tag = show_details.find("p", itemprop="aggregateRating")
-                if imdb_rating_tag and imdb_rating_tag.find("a"):
-                    rating_text = imdb_rating_tag.find("a").text.strip()
-                    try:
-                        imdb_rating = float(rating_text)
-                        logger.debug(f"[Worker {worker_id}] IMDB Rating extraído: {imdb_rating}")
-                    except ValueError:
-                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
+            # Extraer IMDB rating
+            imdb_p = show_details.find("p", string=lambda s: s and "IMDB Rating:" in s if s else False)
+            if imdb_p and imdb_p.find("a"):
+                rating_text = imdb_p.find("a").text.strip().split()[0]
+                try:
+                    imdb_rating = float(rating_text)
+                    logger.debug(f"[Worker {worker_id}] IMDB Rating extraído: {imdb_rating}")
+                except ValueError:
+                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
 
-                genre_tags = show_details.find_all("a", href=re.compile(r"/tags-tv"))
+            # Extraer género
+            genre_p = show_details.find("p", string=lambda s: s and "Género:" in s if s else False)
+            if genre_p:
+                genre_tags = genre_p.find_all("a")
                 genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
                 logger.debug(f"[Worker {worker_id}] Género extraído: {genre}")
-        except Exception as e:
-            logger.error(f"[Worker {worker_id}] Error al extraer información adicional de la serie: {e}")
-            # Continuamos aunque no podamos obtener el año
 
         # Crear una conexión a la base de datos para reutilizarla
         connection = connect_db(db_path)
@@ -204,7 +266,8 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 is_new_season = False
 
             # Verificar si el episodio existe
-            episode_exists_flag, episode_id = episode_exists(season_id, episode_number, episode_title, connection, db_path)
+            episode_exists_flag, episode_id = episode_exists(season_id, episode_number, episode_title, connection,
+                                                             db_path)
 
             # Si el episodio no existe, lo insertamos
             if not episode_exists_flag:
@@ -220,12 +283,8 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 logger.info(f"[Worker {worker_id}] Episodio {episode_number} encontrado con ID {episode_id}")
                 is_new_episode = False
 
-            # Volver a la página del episodio para extraer los enlaces
-            driver.get(episode_url)
-            time.sleep(1.5)  # Reducido para optimizar
-
-            # Extraer enlaces usando la función compartida
-            server_links = extract_links(driver, episode_id=episode_id, logger=logger)
+            # Extraer enlaces usando la función mejorada
+            server_links = extract_episode_links(driver, episode_id)
 
             # Insertar los enlaces en la base de datos en lote
             new_links_count = 0
@@ -257,13 +316,114 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
             }
         except Exception as e:
             logger.error(f"[Worker {worker_id}] Error al procesar el episodio: {e}")
+            logger.debug(traceback.format_exc())
             connection.close()
             raise
     except Exception as e:
         logger.error(f"[Worker {worker_id}] Error al extraer detalles del episodio {episode_url}: {e}")
-        if driver:
+        logger.debug(traceback.format_exc())
+        if 'driver' in locals() and driver:
             driver.quit()
         raise
+
+
+# Función para extraer enlaces de un episodio
+def extract_episode_links(driver, episode_id):
+    """Extrae enlaces de un episodio."""
+    server_links = []
+    logger.debug(f"Extrayendo enlaces para el episodio ID {episode_id}")
+
+    try:
+        # Esperar a que aparezcan los selectores de embed
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "embed-selector"))
+        )
+
+        # Encontrar todos los embed-selectors
+        embed_selectors = driver.find_elements(By.CLASS_NAME, 'embed-selector')
+        logger.debug(f"Número de enlaces encontrados: {len(embed_selectors)}")
+
+        for i, embed_selector in enumerate(embed_selectors):
+            try:
+                # Extraer idioma y servidor antes de hacer clic
+                embed_html = embed_selector.get_attribute('outerHTML')
+                embed_soup = BeautifulSoup(embed_html, "html.parser")
+
+                # Determinar el idioma
+                language = None
+                if "Audio Español" in embed_html:
+                    language = "Audio Español"
+                elif "Subtítulo Español" in embed_html:
+                    language = "Subtítulo Español"
+                elif "Audio Latino" in embed_html:
+                    language = "Audio Latino"
+                elif "Audio Original" in embed_html:
+                    language = "Audio Original"
+                elif "Subtítulo Ingles" in embed_html:
+                    language = "Subtítulo Ingles"
+
+                # Extraer el servidor usando la nueva estructura HTML
+                server = None
+                provider_tag = embed_soup.find("b", class_="provider")
+                if provider_tag:
+                    server_text = provider_tag.text.strip()
+                    # Extraer el dominio principal del servidor
+                    server = server_text.lower().split('.')[0] if '.' in server_text else server_text.lower()
+                    logger.debug(f"Servidor extraído de la clase provider: {server}")
+                else:
+                    # Método alternativo si no se encuentra la clase provider
+                    if "Servidor:" in embed_html:
+                        server_match = re.search(r'Servidor:([^<]+)', embed_html)
+                        if server_match:
+                            server_text = server_match.group(1).strip()
+                            server = server_text.lower().split('.')[0] if '.' in server_text else server_text.lower()
+                            logger.debug(f"Servidor extraído del texto: {server}")
+
+                logger.debug(f"Selector {i + 1}: Idioma={language}, Servidor={server}")
+
+                # Hacer clic en el selector para mostrar el iframe
+                driver.execute_script("arguments[0].click();", embed_selector)
+                time.sleep(1.5)  # Esperar a que se cargue el iframe
+
+                try:
+                    # Esperar a que aparezca el iframe
+                    iframe = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".embed-movie iframe"))
+                    )
+
+                    # Obtener el enlace del iframe
+                    embedded_link = iframe.get_attribute('src')
+                    logger.debug(f"Enlace embebido extraído: {embedded_link}")
+
+                    # Modificar el enlace si es powvideo o streamplay
+                    if embedded_link and server and server in ["powvideo", "streamplay"]:
+                        embedded_link = re.sub(r"embed-([^-]+)-\d+x\d+\.html", r"\1", embedded_link)
+
+                    # Determinar la calidad en función del servidor
+                    quality = '1080p' if server in ['streamtape', 'vidmoly', 'mixdrop'] else 'hdrip'
+
+                    # Añadir enlace a la lista si tenemos todos los datos necesarios
+                    if server and language and embedded_link:
+                        server_links.append({
+                            "episode_id": episode_id,
+                            "server": server,
+                            "language": language,
+                            "link": embedded_link,
+                            "quality": quality
+                        })
+                        logger.debug(f"Enlace añadido: {server} - {language}")
+                except Exception as e:
+                    logger.error(f"Error al obtener el iframe para el selector {i + 1}: {e}")
+            except Exception as e:
+                logger.error(f"Error al procesar el selector de embed {i + 1}: {e}")
+
+        logger.info(f"Total de enlaces extraídos: {len(server_links)}")
+        return server_links
+    except Exception as e:
+        logger.error(f"Error al extraer enlaces: {e}")
+        logger.debug(traceback.format_exc())
+        return []
+
 
 # Función para procesar un episodio con reintentos
 def process_episode_with_retries(episode_url, worker_id, db_path=None):
@@ -279,6 +439,7 @@ def process_episode_with_retries(episode_url, worker_id, db_path=None):
     logger.error(
         f"[Worker {worker_id}] No se pudo procesar el episodio {episode_url} después de {MAX_RETRIES} intentos")
     return None
+
 
 # Función para procesar episodios en paralelo
 def process_episodes_in_parallel(episode_urls, db_path=None):
@@ -302,8 +463,10 @@ def process_episodes_in_parallel(episode_urls, db_path=None):
                     logger.info(f"Episodio actualizado procesado correctamente: {url}")
             except Exception as e:
                 logger.error(f"Error al procesar el episodio actualizado {url}: {e}")
+                logger.debug(traceback.format_exc())
 
     return results
+
 
 # Función para generar informe de actualización
 def generate_update_report(start_time, processed_episodes):
@@ -379,6 +542,7 @@ Este es un mensaje automático generado por el sistema de actualización de epis
 
     return report
 
+
 # Función para registrar estadísticas de actualización
 def log_update_stats(start_time, processed_episodes, db_path=None):
     try:
@@ -436,12 +600,14 @@ def log_update_stats(start_time, processed_episodes, db_path=None):
         }
     except Exception as e:
         logger.error(f"Error al registrar estadísticas de actualización: {e}")
+        logger.debug(traceback.format_exc())
         return None
     finally:
         if 'cursor' in locals() and cursor:
             cursor.close()
         if 'connection' in locals() and connection:
             connection.close()
+
 
 # Función principal para procesar episodios actualizados
 def process_updated_episodes(db_path=None):
@@ -496,12 +662,18 @@ def process_updated_episodes(db_path=None):
         # Registrar estadísticas
         stats = log_update_stats(start_time, processed_episodes, db_path)
 
+        # Generar informe
+        report = generate_update_report(start_time, processed_episodes)
+        logger.info(report)
+
         logger.info(
             f"Actualización de episodios actualizados completada: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return processed_episodes
     except Exception as e:
         logger.critical(f"Error crítico en la actualización de episodios actualizados: {e}")
+        logger.debug(traceback.format_exc())
         return []
+
 
 # Punto de entrada principal
 if __name__ == "__main__":
@@ -509,12 +681,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Actualización de episodios actualizados')
     parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')
     parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')
+    parser.add_argument('--reset-progress', action='store_true',
+                        help='Reiniciar el progreso (procesar todos los episodios)')
 
     args = parser.parse_args()
 
     # Actualizar configuración de paralelización si se especifica
     if args.max_workers:
         MAX_WORKERS = args.max_workers
+
+    # Reiniciar progreso si se solicita
+    if args.reset_progress and os.path.exists(PROGRESS_FILE):
+        os.remove(PROGRESS_FILE)
+        logger.info("Progreso reiniciado. Se procesarán todos los episodios.")
 
     # Ejecutar la actualización de episodios
     process_updated_episodes(args.db_path)

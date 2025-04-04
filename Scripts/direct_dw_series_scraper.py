@@ -1,1122 +1,1301 @@
 import time
 import re
-import sqlite3
-import json
-import os
-import logging
-import sys
 import concurrent.futures
-import atexit
-import signal
-from queue import Queue
-from threading import Lock
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
+import argparse
+import os
+import traceback
+import json
+import threading
+from datetime import datetime
+from queue import Queue, Empty
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
-from bs4 import BeautifulSoup
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
-# Importar PROJECT_ROOT desde main.py
-try:
-    from main import PROJECT_ROOT
-except ImportError:
-    # Si no se puede importar, usar el directorio actual
-    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Importar utilidades compartidas
+from scraper_utils import (
+    setup_logger, create_driver, connect_db, login, setup_database,
+    save_progress, load_progress, clear_cache, find_series_by_title_year,
+    season_exists, episode_exists, insert_series, insert_season,
+    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
+)
 
-# Configuración del logger para evitar duplicación
-logger = logging.getLogger("series_scraper")
-logger.setLevel(logging.DEBUG)
-logger.propagate = False  # Importante para evitar duplicación
+# Configuración específica para este script
+SCRIPT_NAME = "direct_dw_series_scraper"
+LOG_FILE = f"{SCRIPT_NAME}.log"
+PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
+SERIES_BASE_URL = f"{BASE_URL}/series/imdb_rating"
 
-# Limpiar handlers previos
-if logger.handlers:
-    logger.handlers.clear()
+# Configurar logger
+logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
-# Asegurar que el directorio de logs existe
-logs_dir = os.path.join(PROJECT_ROOT, "logs")
-if not os.path.exists(logs_dir):
-    os.makedirs(logs_dir)
+# Colas para comunicación entre workers
+url_queue = Queue()  # Worker 1 -> Worker 2
+series_data_queue = Queue()  # Worker 2 -> Worker 3
+processed_series_queue = Queue()  # Worker 3 -> Worker 4
 
-# Handler para consola con salida a stdout
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.DEBUG)
+# Evento para señalizar parada
+stop_event = threading.Event()
 
-# Handler para archivo
-file_handler = logging.FileHandler(os.path.join(logs_dir, "direct_scraper_series.log"))
-file_handler.setLevel(logging.INFO)
+# Evento para señalizar que Worker 1 está activo
+worker1_active = threading.Event()
+worker1_active.set()  # Inicialmente activo
 
-# Formato único para ambos handlers
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
-console_handler.setFormatter(formatter)
-file_handler.setFormatter(formatter)
+# Evento para señalizar que Worker 2 está activo
+worker2_active = threading.Event()
+worker2_active.set()  # Inicialmente activo
 
-logger.addHandler(console_handler)
-logger.addHandler(file_handler)
+# Contadores para estadísticas
+stats = {
+    'pages_processed': 0,
+    'series_found': 0,
+    'series_processed': 0,
+    'new_series': 0,
+    'new_seasons': 0,
+    'new_episodes': 0,
+    'new_links': 0,
+    'errors': 0,
+    'skipped_series': 0,
+    'skipped_seasons': 0,
+    'skipped_episodes': 0
+}
 
-
-# Redirigir excepciones no capturadas
-def handle_exception(exc_type, exc_value, exc_traceback):
-    logger.error("Excepción no capturada", exc_info=(exc_type, exc_value, exc_traceback))
-
-
-sys.excepthook = handle_exception
-
-# Credenciales de inicio de sesión para diferentes cuentas
-user_credentials = [
-    {"username": "javierhesd", "password": "Larrykapija"},
-    {"username": "grhsfvghjsawevfw", "password": "Larrykapija"},
-    {"username": "sdrghsdrha", "password": "Larrykapija"},
-    {"username": "rolankor", "password": "Rolankor_09"}
-]
-
-# URL de la página de inicio de sesión y de las series
-login_url = "https://hdfull.blog/login"
-base_url = "https://hdfull.blog"
-series_url = "https://hdfull.blog/series/abc/"
-
-# Directorio para guardar el progreso
-progress_dir = os.path.join(PROJECT_ROOT, "progress")
-if not os.path.exists(progress_dir):
-    os.makedirs(progress_dir)
-
-# Archivo para guardar el progreso
-progress_file = os.path.join(progress_dir, "series_progress.json")
-
-# Ruta de la base de datos
-db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
-
-# Contador de reinicios del script
-restart_count = 0
-MAX_RESTARTS = 3
-
-# Número de workers para el scraping paralelo
-NUM_WORKERS = 4
-
-# Lock para sincronizar el acceso a la base de datos
-db_lock = Lock()
-
-# Cola para almacenar las URLs de las series a procesar
-series_queue = Queue()
-
-# Lista para mantener referencia a todos los drivers
-all_drivers = []
-
-# Lock para el archivo de progreso
-progress_lock = Lock()
+# Locks para sincronización
+stats_lock = threading.Lock()
+db_lock = threading.Lock()
+progress_lock = threading.Lock()
 
 
-# Función para crear un nuevo driver de Chrome
-def create_driver():
-    service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Ejecuta Chrome en modo headless
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(service=service, options=options)
-    all_drivers.append(driver)  # Añadir a la lista global
-    return driver
-
-
-# Función para cerrar todos los drivers
-def close_all_drivers():
-    logger.info(f"Cerrando {len(all_drivers)} drivers...")
-    for driver in all_drivers:
+# Función para reintentar operaciones propensas a fallar
+def retry_operation(operation, max_retries=3, retry_delay=1):
+    """Reintenta una operación hasta max_retries veces con un delay entre intentos."""
+    for attempt in range(max_retries):
         try:
-            driver.quit()
-        except Exception as e:
-            logger.error(f"Error al cerrar driver: {e}")
-    logger.info("Todos los drivers han sido cerrados.")
+            return operation()
+        except (StaleElementReferenceException, NoSuchElementException, TimeoutException) as e:
+            if attempt == max_retries - 1:
+                # Si es el último intento, propagar la excepción
+                raise
+            logger.warning(f"Error en intento {attempt + 1}/{max_retries}: {e}. Reintentando en {retry_delay}s...")
+            time.sleep(retry_delay)
+    # No debería llegar aquí, pero por si acaso
+    raise Exception("Todos los reintentos fallaron")
 
 
-# Registrar función para cerrar drivers al salir
-atexit.register(close_all_drivers)
+# Worker 1: Obtiene URLs de series por páginas
+def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
+    logger.info(f"Worker 1: Iniciando extracción de URLs de series desde la página {start_page}")
+
+    current_page = start_page
+    empty_pages_count = 0
+    all_series_urls = []
+
+    try:
+        while not stop_event.is_set():
+            # Si se especificó un máximo de páginas y ya lo alcanzamos, salir
+            if max_pages and current_page > start_page + max_pages - 1:
+                logger.info(f"Worker 1: Se alcanzó el límite de {max_pages} páginas. Finalizando.")
+                break
+
+            # Obtener URLs de series de la página actual
+            logger.info(f"Worker 1: Procesando página {current_page}")
+            page_series_urls = get_series_urls_from_page(driver, current_page)
+
+            # Actualizar estadísticas
+            with stats_lock:
+                stats['pages_processed'] += 1
+                stats['series_found'] += len(page_series_urls)
+
+            # Si no hay series en la página, incrementar contador de páginas vacías
+            if not page_series_urls:
+                empty_pages_count += 1
+                logger.warning(
+                    f"Worker 1: Página {current_page} vacía. Contador de páginas vacías: {empty_pages_count}")
+
+                # Si encontramos 3 páginas vacías consecutivas, asumimos que no hay más series
+                if empty_pages_count >= 3:
+                    logger.info(
+                        f"Worker 1: Se encontraron {empty_pages_count} páginas vacías consecutivas. Finalizando.")
+                    break
+            else:
+                # Reiniciar contador de páginas vacías si encontramos series
+                empty_pages_count = 0
+
+            # Añadir URLs a la lista total
+            all_series_urls.extend(page_series_urls)
+
+            # Cargar URLs ya procesadas
+            processed_urls = set(progress_data.get('processed_urls', []))
+
+            # Filtrar URLs ya procesadas
+            new_urls = [url for url in page_series_urls if url not in processed_urls]
+            logger.info(f"Worker 1: Encontrados {len(new_urls)} series nuevas en la página {current_page}")
+
+            # Poner las URLs en la cola para el Worker 2
+            for url in new_urls:
+                if stop_event.is_set():
+                    break
+                url_queue.put(url)
+                logger.debug(f"Worker 1: URL añadida a la cola: {url}")
+
+            # Pasar a la siguiente página
+            current_page += 1
+
+            # Pequeña pausa para no sobrecargar el servidor
+            time.sleep(1)
+
+            # Verificar si hay suficientes URLs en la cola para los workers
+            # Si hay más de 20 URLs, hacer una pausa para permitir que los workers procesen
+            if url_queue.qsize() > 20:
+                logger.info(
+                    f"Worker 1: Haciendo pausa para permitir que los workers procesen la cola (tamaño: {url_queue.qsize()})")
+                time.sleep(5)  # Pausa reducida a 5 segundos para ser más eficiente
+
+        # Guardar todas las URLs en un archivo JSON para referencia
+        save_urls_to_json(all_series_urls)
+
+        logger.info(f"Worker 1: Finalizado. Total de series encontradas: {len(all_series_urls)}")
+        return all_series_urls
+
+    except Exception as e:
+        logger.error(f"Worker 1: Error al extraer URLs: {e}")
+        logger.debug(traceback.format_exc())
+        with stats_lock:
+            stats['errors'] += 1
+        return all_series_urls
+    finally:
+        # Indicar que Worker 1 ha terminado
+        worker1_active.clear()
+        logger.info("Worker 1: Marcado como inactivo. Los demás workers continuarán hasta vaciar las colas.")
 
 
-# Manejar señales de terminación
-def signal_handler(sig, frame):
-    logger.info(f"Señal recibida: {sig}. Cerrando drivers y finalizando...")
-    close_all_drivers()
-    sys.exit(0)
+# Función para guardar URLs en un archivo JSON
+def save_urls_to_json(all_urls):
+    try:
+        output_file = os.path.join(PROJECT_ROOT, "data", f"{SCRIPT_NAME}_urls.json")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        data = {
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "total_urls": len(all_urls),
+            "all_urls": all_urls
+        }
+
+        with open(output_file, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        logger.info(f"URLs guardadas en {output_file}")
+    except Exception as e:
+        logger.error(f"Error al guardar URLs en JSON: {e}")
 
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+# Función para obtener URLs de series de una página específica
+def get_series_urls_from_page(driver, page_number):
+    """Obtiene las URLs de todas las series en una página específica."""
+    page_url = f"{SERIES_BASE_URL}/{page_number}"
+    logger.info(f"Obteniendo series de la página {page_number}: {page_url}")
 
+    try:
+        driver.get(page_url)
+        time.sleep(2)  # Esperar a que se cargue la página
 
-# Función para inicializar la base de datos
-def initialize_db():
-    with db_lock:
+        # Esperar a que aparezca el contenedor de series
         try:
-            connection = sqlite3.connect(db_path)
-            cursor = connection.cursor()
-
-            # Crear tablas si no existen
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS media_downloads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT,
-                year INTEGER,
-                imdb_rating REAL,
-                genre TEXT,
-                type TEXT CHECK(type IN ('movie', 'serie')),
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".span-6.inner-6.tt.view"))
             )
-            ''')
+        except TimeoutException:
+            logger.warning(f"Timeout esperando el contenedor de series en la página {page_number}")
+            return []
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS servers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE
-            )
-            ''')
+        # Obtener el HTML de la página
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS qualities (
-                quality_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                quality TEXT
-            )
-            ''')
+        # Buscar todos los divs de series
+        series_divs = soup.find_all("div", class_="span-6 inner-6 tt view")
+        logger.info(f"Encontrados {len(series_divs)} series en la página {page_number}")
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS series_seasons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                movie_id INTEGER,
-                season INTEGER,
-                FOREIGN KEY(movie_id) REFERENCES media_downloads(id)
-            )
-            ''')
+        if not series_divs:
+            logger.warning(f"No se encontraron series en la página {page_number}")
+            return []
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS series_episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                season_id INTEGER,
-                episode INTEGER,
-                title TEXT,
-                FOREIGN KEY(season_id) REFERENCES series_seasons(id)
-            )
-            ''')
+        # Extraer las URLs de las series
+        series_urls = []
+        for div in series_divs:
+            try:
+                # Buscar el enlace principal de la serie
+                link_tag = div.find("a", class_="spec-border-ie")
+                if link_tag and 'href' in link_tag.attrs:
+                    series_href = link_tag['href']
+                    series_url = BASE_URL + series_href if not series_href.startswith('http') else series_href
+                    series_urls.append(series_url)
+            except Exception as e:
+                logger.error(f"Error al procesar un div de serie: {e}")
+                continue
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS links_files_download (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                movie_id INTEGER,
-                server_id INTEGER,
-                language TEXT,
-                link TEXT,
-                quality_id INTEGER,
-                episode_id INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(movie_id) REFERENCES media_downloads(id) ON DELETE CASCADE,
-                FOREIGN KEY(server_id) REFERENCES servers(id),
-                FOREIGN KEY(quality_id) REFERENCES qualities(quality_id),
-                FOREIGN KEY(episode_id) REFERENCES series_episodes(id)
-            )
-            ''')
+        logger.info(f"Se extrajeron {len(series_urls)} URLs de series de la página {page_number}")
+        return series_urls
 
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS update_stats (
-                update_date DATE PRIMARY KEY,
-                duration_minutes REAL,
-                updated_movies INTEGER,
-                new_links INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
+    except Exception as e:
+        logger.error(f"Error al obtener series de la página {page_number}: {e}")
+        logger.debug(traceback.format_exc())
+        return []
 
-            connection.commit()
-            logger.info("Base de datos inicializada correctamente")
-            return True
+
+# Worker 2: Extrae datos de las series y verifica en la base de datos
+def worker2_series_extractor(driver, db_path, worker_id=0):
+    logger.info(f"Worker 2 (ID {worker_id}): Iniciando extracción de datos de series")
+
+    while not stop_event.is_set():
+        try:
+            # Obtener una URL de la cola con timeout
+            try:
+                series_url = url_queue.get(timeout=5)
+            except Empty:
+                # Si la cola está vacía y el Worker 1 ha terminado, salir
+                if url_queue.empty() and not worker1_active.is_set():
+                    logger.info(f"Worker 2 (ID {worker_id}): No hay más URLs para procesar y Worker 1 ha terminado")
+                    break
+                # Si la cola está vacía pero Worker 1 sigue activo, esperar
+                logger.debug(f"Worker 2 (ID {worker_id}): Cola vacía, pero Worker 1 sigue activo. Esperando...")
+                time.sleep(2)
+                continue
+
+            logger.info(f"Worker 2 (ID {worker_id}): Procesando serie: {series_url}")
+
+            # Extraer información básica de la serie para verificar en la BD
+            basic_info = extract_basic_series_info(driver, series_url, worker_id)
+
+            if not basic_info:
+                logger.error(
+                    f"Worker 2 (ID {worker_id}): No se pudo extraer información básica de la serie: {series_url}")
+                url_queue.task_done()
+                continue
+
+            # Verificar si la serie ya existe en la BD
+            series_exists_flag, series_id = check_series_in_db(basic_info, worker_id)
+
+            if series_exists_flag:
+                logger.info(
+                    f"Worker 2 (ID {worker_id}): Serie '{basic_info['title']}' ya existe en la BD con ID {series_id}")
+
+                # Verificar si necesitamos actualizar temporadas/episodios
+                need_update = check_if_series_needs_update(driver, series_url, series_id, worker_id)
+
+                if not need_update:
+                    logger.info(f"Worker 2 (ID {worker_id}): Serie '{basic_info['title']}' está actualizada. Saltando.")
+                    with stats_lock:
+                        stats['skipped_series'] += 1
+                    url_queue.task_done()
+                    continue
+
+            # Si llegamos aquí, necesitamos extraer los detalles completos de la serie
+            logger.info(f"Worker 2 (ID {worker_id}): Extrayendo detalles completos de la serie: {series_url}")
+            series_data = extract_series_details(driver, series_url, basic_info, worker_id)
+
+            if series_data:
+                # Añadir el ID de la serie si ya existe
+                if series_exists_flag:
+                    series_data["id"] = series_id
+
+                # Poner los datos en la cola para el Worker 3
+                series_data_queue.put({
+                    "series_url": series_url,
+                    "series_data": series_data,
+                    "exists": series_exists_flag
+                })
+                logger.debug(f"Worker 2 (ID {worker_id}): Datos añadidos a la cola para Worker 3: {series_url}")
+
+            # Marcar la tarea como completada
+            url_queue.task_done()
+
         except Exception as e:
-            logger.error(f"Error al inicializar la base de datos: {e}")
-            return False
-        finally:
-            if connection:
-                connection.close()
+            logger.error(f"Worker 2 (ID {worker_id}): Error al procesar URL: {e}")
+            logger.debug(traceback.format_exc())
+            with stats_lock:
+                stats['errors'] += 1
+            # Marcar la tarea como completada para no bloquear la cola
+            try:
+                url_queue.task_done()
+            except:
+                pass
+
+    logger.info(f"Worker 2 (ID {worker_id}): Finalizado")
+    # Indicar que Worker 2 ha terminado
+    worker2_active.clear()
 
 
-# Función para conectar a la base de datos
-def connect_db():
+# Función para extraer información básica de la serie
+def extract_basic_series_info(driver, series_url, worker_id=0):
+    """Extrae información básica de la serie para verificar en la BD."""
+    logger.info(f"[Worker {worker_id}] Extrayendo información básica de la serie: {series_url}")
+
     try:
-        connection = sqlite3.connect(db_path)
-        connection.row_factory = sqlite3.Row
-        logger.debug("Conexión a la base de datos establecida correctamente")
-        return connection
-    except Exception as e:
-        logger.error(f"Error al conectar a la base de datos: {e}")
-        raise
+        driver.get(series_url)
+        time.sleep(2)  # Esperar a que se cargue la página
 
-
-# Función para iniciar sesión con credenciales específicas
-def login(driver, username, password):
-    try:
-        logger.info(f"Iniciando sesión con usuario: {username}")
-        driver.get(login_url)
-        username_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-        password_field = driver.find_element(By.NAME, "password")
-        login_button = driver.find_element(By.XPATH, "//a[text()='Ingresar']")
-
-        username_field.send_keys(username)
-        password_field.send_keys(password)
-        login_button.click()
-
-        WebDriverWait(driver, 10).until(EC.url_changes(login_url))
-        logger.info(f"Sesión iniciada correctamente con usuario: {username}")
-        return True
-    except Exception as e:
-        logger.error(f"Error al iniciar sesión con usuario {username}: {e}")
-        return False
-
-
-# Función para reiniciar el driver y la sesión
-def restart_driver(driver, username, password):
-    logger.info(f"Reiniciando el driver para usuario {username}...")
-    try:
-        driver.quit()
-        if driver in all_drivers:
-            all_drivers.remove(driver)
-        time.sleep(2)  # Esperar a que se cierre correctamente
-
-        new_driver = create_driver()
-        login_success = login(new_driver, username, password)
-
-        if login_success:
-            logger.info(f"Driver reiniciado y sesión iniciada correctamente para usuario {username}")
-            return new_driver
-        else:
-            logger.error(f"No se pudo iniciar sesión después de reiniciar el driver para usuario {username}")
+        # Esperar a que aparezca la información de la serie
+        try:
+            WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.ID, "summary-title"))
+            )
+        except TimeoutException:
+            logger.error(f"[Worker {worker_id}] Timeout esperando información de la serie en {series_url}")
             return None
+
+        # Obtener el HTML de la página
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Extraer título de la serie
+        title_div = soup.find("div", id="summary-title")
+        if not title_div:
+            logger.error(f"[Worker {worker_id}] No se pudo encontrar el título de la serie en {series_url}")
+            return None
+
+        series_title = title_div.text.strip()
+
+        # Extraer información adicional de la serie desde show-details
+        show_details = soup.find("div", class_="show-details")
+
+        series_year = None
+        imdb_rating = None
+        genre = None
+        status = None
+
+        if show_details:
+            # Extraer estado
+            status_p = show_details.find("p", string=lambda s: s and "Estado:" in s if s else False)
+            if status_p and status_p.find("a"):
+                status = status_p.find("a").text.strip()
+
+            # Extraer año
+            year_p = show_details.find("p", string=lambda s: s and "Año:" in s if s else False)
+            if year_p and year_p.find("a"):
+                try:
+                    series_year = int(year_p.find("a").text.strip())
+                except ValueError:
+                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el año a entero")
+
+            # Extraer IMDB rating
+            imdb_p = show_details.find("p", string=lambda s: s and "IMDB Rating:" in s if s else False)
+            if imdb_p and imdb_p.find("a"):
+                rating_text = imdb_p.find("a").text.strip().split()[0]
+                try:
+                    imdb_rating = float(rating_text)
+                except ValueError:
+                    logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
+
+            # Extraer género
+            genre_p = show_details.find("p", string=lambda s: s and "Género:" in s if s else False)
+            if genre_p:
+                genre_tags = genre_p.find_all("a")
+                genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
+
+        return {
+            "title": series_title,
+            "url": series_url,
+            "year": series_year,
+            "imdb_rating": imdb_rating,
+            "genre": genre,
+            "status": status
+        }
+
     except Exception as e:
-        logger.error(f"Error al reiniciar el driver para usuario {username}: {e}")
+        logger.error(f"[Worker {worker_id}] Error al extraer información básica de la serie {series_url}: {e}")
+        logger.debug(traceback.format_exc())
         return None
 
 
-# Función para verificar si una serie ya existe en la base de datos
-def series_exists(title, year, imdb_rating, genre):
+# Función para verificar si la serie existe en la BD
+def check_series_in_db(series_info, worker_id=0):
+    """Verifica si la serie ya existe en la base de datos."""
+    if not series_info:
+        return False, None
+
     with db_lock:
         connection = connect_db()
         cursor = connection.cursor()
         try:
+            # Primero intentamos buscar por título exacto y año
+            if series_info["year"]:
+                cursor.execute('''
+                    SELECT id FROM media_downloads 
+                    WHERE title=? AND year=? AND type='serie'
+                ''', (series_info["title"], series_info["year"]))
+                result = cursor.fetchone()
+                if result:
+                    logger.info(
+                        f"[Worker {worker_id}] Serie encontrada por título y año: {series_info['title']} ({series_info['year']})")
+                    return True, result['id']
+
+            # Si no se encuentra, intentamos buscar solo por título
             cursor.execute('''
                 SELECT id FROM media_downloads 
-                WHERE title=? AND year=? AND imdb_rating=? AND genre=? AND type='serie'
-            ''', (title, year, imdb_rating, genre))
+                WHERE title=? AND type='serie'
+            ''', (series_info["title"],))
             result = cursor.fetchone()
+
             exists = result is not None
             logger.debug(
-                f"Verificación de existencia de serie: {title} ({year}) - {'Existe' if exists else 'No existe'}")
+                f"[Worker {worker_id}] Verificación de existencia de serie: {series_info['title']} - {'Existe' if exists else 'No existe'}")
             return exists, result['id'] if exists else None
+
         except Exception as e:
-            logger.error(f"Error al verificar si la serie existe: {e}")
+            logger.error(f"[Worker {worker_id}] Error al verificar si la serie existe en la BD: {e}")
             return False, None
         finally:
             cursor.close()
             connection.close()
 
 
-# Función para verificar si un episodio ya existe en la base de datos
-def episode_exists(season_id, episode_number, title):
-    with db_lock:
-        connection = connect_db()
-        cursor = connection.cursor()
-        try:
-            cursor.execute('''
-                SELECT id FROM series_episodes 
-                WHERE season_id=? AND episode=? AND title=?
-            ''', (season_id, episode_number, title))
-            result = cursor.fetchone()
-            exists = result is not None
-            logger.debug(
-                f"Verificación de existencia de episodio: temporada {season_id}, episodio {episode_number} - {'Existe' if exists else 'No existe'}")
-            return exists, result['id'] if exists else None
-        except Exception as e:
-            logger.error(f"Error al verificar si el episodio existe: {e}")
-            return False, None
-        finally:
-            cursor.close()
-            connection.close()
+# Función para verificar si una serie necesita actualización
+def check_if_series_needs_update(driver, series_url, series_id, worker_id=0):
+    """Verifica si una serie necesita actualización (nuevas temporadas o episodios)."""
+    logger.info(f"[Worker {worker_id}] Verificando si la serie con ID {series_id} necesita actualización")
 
-
-# Función para extraer detalles del episodio
-def extract_episode_details(driver, episode_url, episode_number, title, worker_id, username):
-    logger.info(f"Worker {worker_id} (usuario {username}): Extrayendo detalles del episodio: {episode_url}")
     try:
-        driver.get(episode_url)
-        time.sleep(1)  # Esperar a que se cargue la página
+        # Obtener las temporadas disponibles en la web
+        available_seasons = get_available_seasons(driver, series_url, worker_id)
 
-        # Crear lista para almacenar los enlaces
-        server_links = []
+        if not available_seasons:
+            logger.warning(f"[Worker {worker_id}] No se encontraron temporadas para la serie con ID {series_id}")
+            return False
 
-        # Encontrar todos los embed-selectors
-        embed_selectors = driver.find_elements(By.CLASS_NAME, 'embed-selector')
-        logger.debug(
-            f"Worker {worker_id} (usuario {username}): Número de enlaces encontrados para episodio {episode_number}: {len(embed_selectors)}")
-
-        for embed_selector in embed_selectors:
-            language = None
-            server = None
-            embedded_link = None
+        # Verificar las temporadas en la BD
+        with db_lock:
+            connection = connect_db()
+            cursor = connection.cursor()
 
             try:
-                # Extraer idioma y servidor antes de hacer clic
-                embed_html = embed_selector.get_attribute('outerHTML')
-                embed_soup = BeautifulSoup(embed_html, "lxml")
+                # Obtener las temporadas existentes en la BD
+                cursor.execute('''
+                    SELECT season FROM series_seasons 
+                    WHERE movie_id=?
+                ''', (series_id,))
 
-                if "Audio Español" in embed_soup.text:
-                    language = "Audio Español"
-                elif "Subtítulo Español" in embed_soup.text:
-                    language = "Subtítulo Español"
-                elif "Audio Latino" in embed_soup.text:
-                    language = "Audio Latino"
+                existing_seasons = [row['season'] for row in cursor.fetchall()]
 
-                server_tag = embed_soup.find("b", class_="provider")
-                if server_tag:
-                    server = server_tag.text.strip().lower()
+                # Verificar si hay nuevas temporadas
+                for season_number, season_url, episode_count in available_seasons:
+                    if season_number not in existing_seasons:
+                        logger.info(
+                            f"[Worker {worker_id}] Se encontró una nueva temporada {season_number} para la serie con ID {series_id}")
+                        return True
 
-                # Hacer clic en el selector
-                embed_selector.click()
-                time.sleep(1)  # Esperar 1 segundo para que el contenido se cargue
+                    # Si la temporada existe, verificar si hay nuevos episodios
+                    cursor.execute('''
+                        SELECT ss.id, COUNT(se.id) as episode_count
+                        FROM series_seasons ss
+                        LEFT JOIN series_episodes se ON ss.id = se.season_id
+                        WHERE ss.movie_id=? AND ss.season=?
+                        GROUP BY ss.id
+                    ''', (series_id, season_number))
 
-                # Obtener el enlace embebido
-                try:
-                    embed_movie = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, 'embed-movie'))
-                    )
-                    iframe = embed_movie.find_element(By.TAG_NAME, 'iframe')
-                    embedded_link = iframe.get_attribute('src')
-                    logger.debug(f"Worker {worker_id} (usuario {username}): Enlace embebido extraído: {embedded_link}")
-                except (TimeoutException, Exception) as e:
-                    logger.error(f"Worker {worker_id} (usuario {username}): Error al obtener el enlace embebido: {e}")
-                    continue
+                    result = cursor.fetchone()
+                    if result:
+                        season_id = result['id']
+                        db_episode_count = result['episode_count']
 
-                # Modificar el enlace si es powvideo o streamplay
-                if embedded_link and server in ["powvideo", "streamplay"]:
-                    embedded_link = re.sub(r"embed-([^-]+)-\d+x\d+\.html", r"\1", embedded_link)
+                        if episode_count > db_episode_count:
+                            logger.info(
+                                f"[Worker {worker_id}] Se encontraron nuevos episodios en temporada {season_number} para la serie con ID {series_id} (Web: {episode_count}, BD: {db_episode_count})")
+                            return True
 
-                # Determinar la calidad en función del servidor
-                quality = '1080p' if server in ['streamtape', 'vidmoly', 'mixdrop'] else 'hdrip'
+                logger.info(f"[Worker {worker_id}] La serie con ID {series_id} está actualizada")
+                return False
 
-                # Añadir enlace a la lista
-                if server and language and embedded_link:
-                    server_links.append({
-                        "server": server,
-                        "language": language,
-                        "link": embedded_link,
-                        "quality": quality
-                    })
             except Exception as e:
-                logger.error(
-                    f"Worker {worker_id} (usuario {username}): Error al procesar el enlace para el episodio {episode_number}: {e}")
-                continue
+                logger.error(f"[Worker {worker_id}] Error al verificar si la serie necesita actualización: {e}")
+                return True  # En caso de error, asumimos que necesita actualización
+            finally:
+                cursor.close()
+                connection.close()
 
-        logger.debug(
-            f"Worker {worker_id} (usuario {username}): Enlaces obtenidos para el episodio {episode_number}: {len(server_links)}")
+    except Exception as e:
+        logger.error(f"[Worker {worker_id}] Error al verificar si la serie necesita actualización: {e}")
+        return True  # En caso de error, asumimos que necesita actualización
 
-        # Solo devolver los detalles si se encontraron enlaces
-        if server_links:
-            return {
-                "episode_number": episode_number,
-                "title": title,
-                "url": episode_url,
-                "links": server_links
-            }
+
+# Función para obtener las temporadas disponibles
+def get_available_seasons(driver, series_url, worker_id=0):
+    """Obtiene las temporadas disponibles para una serie."""
+    logger.info(f"[Worker {worker_id}] Obteniendo temporadas disponibles para: {series_url}")
+
+    seasons = []
+    season_number = 1
+    max_empty_seasons = 3  # Máximo número de temporadas vacías consecutivas antes de parar
+    empty_seasons_count = 0
+
+    while empty_seasons_count < max_empty_seasons and not stop_event.is_set():
+        season_url = f"{series_url}/temporada-{season_number}"
+        logger.info(f"[Worker {worker_id}] Verificando temporada {season_number}: {season_url}")
+
+        # Verificar si la temporada existe y tiene episodios
+        season_exists, episode_count = check_season_exists(driver, season_url, worker_id)
+
+        if season_exists and episode_count > 0:
+            seasons.append((season_number, season_url, episode_count))
+            logger.info(f"[Worker {worker_id}] Temporada {season_number} encontrada con {episode_count} episodios")
+            empty_seasons_count = 0  # Reiniciar contador de temporadas vacías
         else:
-            logger.warning(
-                f"Worker {worker_id} (usuario {username}): No se encontraron enlaces para el episodio {episode_number}. Saltando...")
-            return None
-    except Exception as e:
-        logger.error(
-            f"Worker {worker_id} (usuario {username}): Error al extraer detalles del episodio {episode_url}: {e}")
-        raise
+            empty_seasons_count += 1
+            logger.info(
+                f"[Worker {worker_id}] Temporada {season_number} no encontrada o sin episodios. Contador: {empty_seasons_count}/{max_empty_seasons}")
+
+        season_number += 1
+
+        # Evitar bucles infinitos si hay demasiadas temporadas
+        if season_number > 100:  # Límite arbitrario para evitar bucles infinitos
+            logger.warning(f"[Worker {worker_id}] Se alcanzó el límite de 100 temporadas. Finalizando búsqueda.")
+            break
+
+    return seasons
 
 
-# Función para extraer detalles de la temporada
-def extract_season_details(driver, season_url, season_number, worker_id, username):
-    logger.info(
-        f"Worker {worker_id} (usuario {username}): Extrayendo detalles de la temporada {season_number}: {season_url}")
+# Función para verificar si una temporada existe comprobando si tiene episodios
+def check_season_exists(driver, season_url, worker_id=0):
+    """Verifica si una temporada existe comprobando si tiene episodios."""
+    logger.info(f"[Worker {worker_id}] Verificando si la temporada existe: {season_url}")
+
     try:
         driver.get(season_url)
-        time.sleep(1)  # Esperar a que se cargue la página
+        time.sleep(2)  # Esperar a que cargue la página
+
+        # Usar BeautifulSoup para analizar la página en lugar de interactuar directamente con el DOM
         page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
+        soup = BeautifulSoup(page_source, "html.parser")
 
-        # Verificar si hay episodios en la temporada
-        episode_elements = soup.find_all("div", class_="span-6 tt view show-view")
-        if not episode_elements:
-            logger.warning(
-                f"Worker {worker_id} (usuario {username}): No se encontraron episodios en la temporada {season_number}: {season_url}")
-            return []
+        # Buscar el contenedor de episodios
+        season_episodes_div = soup.find("div", id="season-episodes")
+        if not season_episodes_div:
+            logger.info(f"[Worker {worker_id}] No se encontró el contenedor de episodios en {season_url}")
+            return False, 0
 
-        logger.info(
-            f"Worker {worker_id} (usuario {username}): Episodios encontrados en la temporada {season_number}: {len(episode_elements)}")
+        # Contar los episodios
+        episode_divs = season_episodes_div.find_all("div", class_="span-6 tt view show-view")
+        episode_count = len(episode_divs)
 
-        # Crear lista para almacenar los episodios
-        episodes = []
+        logger.info(f"[Worker {worker_id}] Temporada tiene {episode_count} episodios")
 
-        # Limitar el número de episodios a procesar para evitar bloqueos
-        max_episodes = min(len(episode_elements), 5)  # Procesar máximo 5 episodios por temporada
+        # Si hay al menos un episodio, la temporada existe
+        return episode_count > 0, episode_count
 
-        for i, episode_element in enumerate(episode_elements[:max_episodes]):
+    except Exception as e:
+        logger.error(f"[Worker {worker_id}] Error al verificar temporada: {e}")
+        logger.debug(traceback.format_exc())
+        return False, 0
+
+
+# Función para procesar episodios usando BeautifulSoup
+def process_episodes_with_soup(driver, season_url, worker_id=0):
+    """Procesa los episodios de una temporada usando BeautifulSoup para evitar errores de elementos obsoletos."""
+    logger.info(f"[Worker {worker_id}] Procesando episodios con BeautifulSoup: {season_url}")
+
+    episodes_data = []
+
+    try:
+        driver.get(season_url)
+        time.sleep(2)  # Esperar a que cargue la página
+
+        # Obtener el HTML de la página
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Buscar el contenedor de episodios
+        season_episodes_div = soup.find("div", id="season-episodes")
+        if not season_episodes_div:
+            logger.warning(f"[Worker {worker_id}] No se encontró el contenedor de episodios en {season_url}")
+            return episodes_data
+
+        # Encontrar todos los episodios
+        episode_divs = season_episodes_div.find_all("div", class_="span-6 tt view show-view")
+        logger.info(f"[Worker {worker_id}] Encontrados {len(episode_divs)} episodios en {season_url}")
+
+        for episode_div in episode_divs:
             try:
-                episode_number_tag = episode_element.find("div", class_="rating")
-                episode_number_text = episode_number_tag.text.strip() if episode_number_tag else None
-                if episode_number_text:
-                    episode_number = int(episode_number_text.split("x")[1])
-                else:
-                    logger.warning(
-                        f"Worker {worker_id} (usuario {username}): No se pudo extraer el número de episodio. Saltando...")
+                # Extraer número de episodio
+                rating_div = episode_div.find("div", class_="rating")
+                if not rating_div:
+                    logger.warning(f"[Worker {worker_id}] No se encontró el div de rating para un episodio")
                     continue
 
-                title_tag = episode_element.find("a", class_="link title-ellipsis")
-                title = title_tag['title'].split(' - ')[-1] if title_tag else "No encontrado"
-                episode_url = base_url + title_tag['href']
+                episode_text = rating_div.text.strip()
+                episode_match = re.search(r'(\d+)x(\d+)', episode_text)
 
-                # Intentar extraer detalles del episodio
-                episode_data = extract_episode_details(driver, episode_url, episode_number, title, worker_id, username)
-                if episode_data:
-                    episodes.append(episode_data)
+                if not episode_match:
+                    logger.warning(f"[Worker {worker_id}] No se pudo extraer el número de episodio: {episode_text}")
+                    continue
+
+                episode_number = int(episode_match.group(2))
+
+                # Extraer título del episodio
+                title_elem = episode_div.find("a", class_="link title-ellipsis")
+                if not title_elem:
+                    logger.warning(f"[Worker {worker_id}] No se encontró el título para el episodio {episode_number}")
+                    continue
+
+                episode_title = title_elem.get("title", "").split(" - ")[-1]
+                episode_url = title_elem.get("href", "")
+
+                if not episode_url.startswith("http"):
+                    episode_url = BASE_URL + episode_url
+
+                logger.info(
+                    f"[Worker {worker_id}] Procesando episodio {episode_number}: {episode_title} - {episode_url}")
+
+                # Extraer enlaces del episodio
+                episode_links = extract_episode_links(driver, episode_url, worker_id)
+
+                episodes_data.append({
+                    "number": episode_number,
+                    "title": episode_title,
+                    "links": episode_links
+                })
 
             except Exception as e:
-                logger.error(f"Worker {worker_id} (usuario {username}): Error al procesar episodio: {e}")
+                logger.error(f"[Worker {worker_id}] Error al procesar episodio: {e}")
+                logger.debug(traceback.format_exc())
                 continue
 
-        return episodes
+        return episodes_data
+
     except Exception as e:
-        logger.error(
-            f"Worker {worker_id} (usuario {username}): Error al extraer detalles de la temporada {season_url}: {e}")
-        raise
+        logger.error(f"[Worker {worker_id}] Error al procesar episodios con BeautifulSoup: {e}")
+        logger.debug(traceback.format_exc())
+        return episodes_data
 
 
-# Función para verificar si hay una siguiente temporada
-def has_next_season(driver, season_url, worker_id, username):
+# Función para extraer detalles de una serie
+def extract_series_details(driver, series_url, basic_info, worker_id=0):
+    """Extrae los detalles completos de una serie desde su página."""
+    logger.info(f"[Worker {worker_id}] Extrayendo detalles completos de la serie: {series_url}")
+
     try:
-        logger.info(f"Worker {worker_id} (usuario {username}): Verificando si existe la temporada: {season_url}")
-        driver.get(season_url)
-        time.sleep(1)  # Esperar a que se cargue la página
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
-        next_season_elements = soup.find_all("div", class_="span-6 tt view show-view")
-        exists = len(next_season_elements) > 0
-        logger.debug(
-            f"Worker {worker_id} (usuario {username}): Temporada {season_url}: {'Existe' if exists else 'No existe'}")
-        return exists
-    except Exception as e:
-        logger.error(
-            f"Worker {worker_id} (usuario {username}): Error al verificar si existe la temporada {season_url}: {e}")
-        return False
+        # Usar la información básica que ya tenemos
+        series_title = basic_info["title"]
+        series_year = basic_info["year"]
+        imdb_rating = basic_info["imdb_rating"]
+        genre = basic_info["genre"]
+        status = basic_info["status"]
 
-
-# Función para extraer detalles de la serie
-def extract_series_details(driver, series_url, worker_id, username):
-    logger.info(f"Worker {worker_id} (usuario {username}): Extrayendo datos de la serie: {series_url}")
-    try:
-        driver.get(series_url)
-        time.sleep(1)  # Esperar a que se cargue la página
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
-
-        # Extraer el título de la serie
-        title_tag = soup.find("div", id="summary-title")
-        title = title_tag.text.strip() if title_tag else "No encontrado"
-        logger.info(f"Worker {worker_id} (usuario {username}): Título de la serie: {title}")
-
-        # Extraer año, IMDB rating y género de la serie
-        show_details = soup.find("div", class_="show-details")
-        year = None
-        imdb_rating = None
-        genre = None
-
-        if show_details:
-            year_tag = show_details.find("a", href=re.compile(r"/buscar/year/"))
-            if year_tag:
-                year = int(year_tag.text.strip())
-            logger.debug(f"Worker {worker_id} (usuario {username}): Año de la serie: {year}")
-
-            imdb_rating_tag = show_details.find("p", itemprop="aggregateRating")
-            if imdb_rating_tag and imdb_rating_tag.find("a"):
-                imdb_rating = float(imdb_rating_tag.find("a").text.strip())
-            logger.debug(f"Worker {worker_id} (usuario {username}): IMDB Rating de la serie: {imdb_rating}")
-
-            genre_tags = show_details.find_all("a", href=re.compile(r"/tags-tv"))
-            genre = ", ".join([tag.text.strip() for tag in genre_tags])
-            logger.debug(f"Worker {worker_id} (usuario {username}): Género de la serie: {genre}")
-
-        # Verificar si la serie ya existe
-        series_exists_flag, existing_series_id = series_exists(title, year, imdb_rating, genre)
-        if series_exists_flag:
-            logger.info(
-                f"Worker {worker_id} (usuario {username}): La serie '{title}' ({year}) ya existe en la base de datos. Saltando...")
-            return None
-
-        # Crear lista para almacenar las temporadas
+        # Extraer temporadas
         seasons_data = []
 
-        # Limitar el número de temporadas a procesar para evitar bloqueos
-        max_seasons = 2  # Procesar máximo 2 temporadas por serie
+        # Obtener todas las temporadas disponibles
+        seasons = get_available_seasons(driver, series_url, worker_id)
 
-        for season_number in range(1, max_seasons + 1):
-            season_url = f"{series_url}/temporada-{season_number}"
-            logger.info(f"Worker {worker_id} (usuario {username}): Verificando temporada {season_number}: {season_url}")
-
-            if not has_next_season(driver, season_url, worker_id, username):
-                logger.info(
-                    f"Worker {worker_id} (usuario {username}): No se encontró la temporada {season_number}. Finalizando.")
-                break
-
-            # Extraer detalles de la temporada
-            try:
-                episodes = extract_season_details(driver, season_url, season_number, worker_id, username)
-                if episodes:
-                    seasons_data.append({
-                        "season_number": season_number,
-                        "episodes": episodes
-                    })
-                    logger.info(
-                        f"Worker {worker_id} (usuario {username}): Temporada {season_number} extraída con {len(episodes)} episodios")
-                else:
-                    logger.warning(
-                        f"Worker {worker_id} (usuario {username}): No se encontraron episodios en la temporada {season_number}")
-            except Exception as e:
-                logger.error(
-                    f"Worker {worker_id} (usuario {username}): Error al extraer la temporada {season_number}: {e}")
-                continue
-
-        # Solo devolver los detalles si se encontraron temporadas con episodios
-        if seasons_data:
-            logger.info(
-                f"Worker {worker_id} (usuario {username}): Serie '{title}' extraída con {len(seasons_data)} temporadas")
+        if not seasons:
+            logger.warning(f"[Worker {worker_id}] No se encontraron temporadas para la serie: {series_title}")
+            # Devolver la información básica sin temporadas
             return {
-                "title": title,
-                "year": year,
+                "title": series_title,
+                "url": series_url,
+                "year": series_year,
                 "imdb_rating": imdb_rating,
                 "genre": genre,
-                "seasons": seasons_data
+                "status": status,
+                "seasons": []
             }
-        else:
-            logger.warning(
-                f"Worker {worker_id} (usuario {username}): No se encontraron temporadas o episodios para la serie: {title}. Saltando...")
-            return None
+
+        # Procesar cada temporada encontrada
+        for season_number, season_url, episode_count in seasons:
+            logger.info(
+                f"[Worker {worker_id}] Procesando temporada {season_number}: {season_url} con {episode_count} episodios")
+
+            try:
+                # Usar BeautifulSoup para procesar los episodios y evitar errores de elementos obsoletos
+                episodes_data = process_episodes_with_soup(driver, season_url, worker_id)
+
+                if episodes_data:
+                    seasons_data.append({
+                        "number": season_number,
+                        "episodes": episodes_data
+                    })
+                else:
+                    logger.warning(
+                        f"[Worker {worker_id}] No se encontraron episodios para la temporada {season_number}")
+
+            except Exception as e:
+                logger.error(f"[Worker {worker_id}] Error al procesar temporada {season_number}: {e}")
+                logger.debug(traceback.format_exc())
+                continue
+
+        return {
+            "title": series_title,
+            "url": series_url,
+            "year": series_year,
+            "imdb_rating": imdb_rating,
+            "genre": genre,
+            "status": status,
+            "seasons": seasons_data
+        }
+
     except Exception as e:
-        logger.error(
-            f"Worker {worker_id} (usuario {username}): Error al extraer detalles de la serie {series_url}: {e}")
-        raise
+        logger.error(f"[Worker {worker_id}] Error al extraer detalles de la serie {series_url}: {e}")
+        logger.debug(traceback.format_exc())
+        return None
 
 
-# Función para insertar la serie, temporadas y episodios en una sola transacción
-def insert_series_with_seasons_and_episodes(series_data, worker_id, username):
+# Función para extraer enlaces de un episodio
+def extract_episode_links(driver, episode_url, worker_id=0):
+    """Extrae los enlaces de streaming de un episodio."""
+    logger.info(f"[Worker {worker_id}] Extrayendo enlaces del episodio: {episode_url}")
+
+    links = []
+    max_retries = 3
+
+    try:
+        # Implementar reintentos para cargar la página
+        for attempt in range(max_retries):
+            try:
+                driver.get(episode_url)
+                time.sleep(2)  # Esperar a que cargue la página
+
+                # Esperar a que aparezca la lista de enlaces
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "embed-list"))
+                )
+                break  # Si llegamos aquí, la página cargó correctamente
+            except TimeoutException:
+                if attempt < max_retries - 1:
+                    logger.warning(f"[Worker {worker_id}] Intento {attempt + 1}/{max_retries} fallido. Reintentando...")
+                    time.sleep(2)
+                else:
+                    logger.warning(
+                        f"[Worker {worker_id}] Timeout esperando enlaces en episodio {episode_url} después de {max_retries} intentos")
+                    return links
+
+        # Obtener el HTML de la página para analizar con BeautifulSoup
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Buscar todos los selectores de enlaces
+        embed_selectors = soup.find_all("div", class_="embed-selector")
+        logger.info(f"[Worker {worker_id}] Encontrados {len(embed_selectors)} enlaces en episodio {episode_url}")
+
+        # Procesar cada selector de enlace
+        for i, selector_soup in enumerate(embed_selectors):
+            try:
+                # Extraer información del enlace
+                # Extraer idioma
+                language = "Desconocido"
+                if "Audio Español" in selector_soup.text:
+                    language = "Audio Español"
+                elif "Subtítulo Español" in selector_soup.text:
+                    language = "Subtítulo Español"
+                elif "Audio Latino" in selector_soup.text:
+                    language = "Audio Latino"
+
+                # Extraer servidor
+                server_elem = selector_soup.find("b", class_="provider")
+                server = server_elem.text.strip() if server_elem else "Desconocido"
+
+                # Extraer calidad
+                quality = "HD1080"  # Valor por defecto
+                if "HD1080" in selector_soup.text:
+                    quality = "HD1080"
+                elif "HD720" in selector_soup.text:
+                    quality = "HD720"
+                elif "SD" in selector_soup.text:
+                    quality = "SD"
+
+                logger.debug(
+                    f"[Worker {worker_id}] Enlace {i + 1}: Idioma={language}, Servidor={server}, Calidad={quality}")
+
+                # Ahora necesitamos hacer clic en el selector para mostrar el enlace
+                # Para esto, necesitamos usar Selenium
+                try:
+                    # Encontrar el selector en la página actual usando un identificador único
+                    # Podemos usar el texto del servidor como identificador
+                    selector_elements = driver.find_elements(By.CLASS_NAME, "embed-selector")
+
+                    if i < len(selector_elements):
+                        # Hacer clic en el selector
+                        selector_elements[i].click()
+                        time.sleep(1)  # Esperar a que se muestre el enlace
+
+                        # Buscar el iframe con el enlace
+                        try:
+                            embed_movie = WebDriverWait(driver, 5).until(
+                                EC.presence_of_element_located((By.CLASS_NAME, "embed-movie"))
+                            )
+                            iframe = embed_movie.find_element(By.TAG_NAME, "iframe")
+                            link_url = iframe.get_attribute("src")
+
+                            # Añadir el enlace a la lista
+                            links.append({
+                                "language": language,
+                                "server": server,
+                                "quality": quality,
+                                "url": link_url
+                            })
+
+                            logger.info(f"[Worker {worker_id}] Enlace extraído: {link_url}")
+                        except (TimeoutException, NoSuchElementException, StaleElementReferenceException) as e:
+                            logger.error(f"[Worker {worker_id}] Error al obtener iframe: {e}")
+                            continue
+                    else:
+                        logger.warning(f"[Worker {worker_id}] No se pudo encontrar el selector {i + 1} en la página")
+
+                except Exception as e:
+                    logger.error(f"[Worker {worker_id}] Error al hacer clic en el selector {i + 1}: {e}")
+                    continue
+
+            except Exception as e:
+                logger.error(f"[Worker {worker_id}] Error al procesar selector {i + 1}: {e}")
+                logger.debug(traceback.format_exc())
+                continue
+
+        return links
+
+    except Exception as e:
+        logger.error(f"[Worker {worker_id}] Error al extraer enlaces del episodio {episode_url}: {e}")
+        logger.debug(traceback.format_exc())
+        return links
+
+
+# Worker 3: Procesa las series verificadas, extrae enlaces y los inserta en la BD
+def worker3_db_processor(db_path, progress_data, worker_id=0):
+    logger.info(f"Worker 3 (ID {worker_id}): Iniciando procesamiento de series en la base de datos")
+
+    processed_urls = set(progress_data.get('processed_urls', []))
+
+    while not stop_event.is_set():
+        try:
+            # Obtener datos de la cola con timeout
+            try:
+                data = series_data_queue.get(timeout=5)
+            except Empty:
+                # Si la cola está vacía y los workers anteriores han terminado, salir
+                if series_data_queue.empty() and (not worker1_active.is_set() and not worker2_active.is_set()):
+                    logger.info(
+                        f"Worker 3 (ID {worker_id}): No hay más series para procesar y workers anteriores han terminado")
+                    break
+                # Si la cola está vacía pero algún worker anterior sigue activo, esperar
+                logger.debug(
+                    f"Worker 3 (ID {worker_id}): Cola vacía, pero workers anteriores siguen activos. Esperando...")
+                time.sleep(2)
+                continue
+
+            series_url = data["series_url"]
+            series_data = data["series_data"]
+            series_exists = data.get("exists", False)
+
+            logger.info(f"Worker 3 (ID {worker_id}): Procesando serie en BD: {series_url}")
+
+            # Guardar la serie en la base de datos
+            with db_lock:
+                result = save_series_to_db(series_data, series_exists, db_path)
+
+            if result:
+                logger.info(f"Worker 3 (ID {worker_id}): Serie guardada correctamente: {series_url}")
+
+                # Actualizar estadísticas
+                with stats_lock:
+                    stats['series_processed'] += 1
+
+                # Poner los datos en la cola para el Worker 4
+                processed_series_queue.put({
+                    "series_url": series_url,
+                    "series_data": series_data,
+                    "result": result
+                })
+
+                # Marcar la URL como procesada
+                processed_urls.add(series_url)
+                with progress_lock:
+                    progress_data['processed_urls'] = list(processed_urls)
+
+                # Guardar progreso periódicamente
+                if len(processed_urls) % 10 == 0:
+                    save_progress(PROGRESS_FILE, progress_data)
+            else:
+                logger.error(f"Worker 3 (ID {worker_id}): Error al guardar la serie: {series_url}")
+                with stats_lock:
+                    stats['errors'] += 1
+
+            # Marcar la tarea como completada
+            series_data_queue.task_done()
+
+        except Exception as e:
+            logger.error(f"Worker 3 (ID {worker_id}): Error al procesar serie: {e}")
+            logger.debug(traceback.format_exc())
+            with stats_lock:
+                stats['errors'] += 1
+            # Marcar la tarea como completada para no bloquear la cola
+            try:
+                series_data_queue.task_done()
+            except:
+                pass
+
+    logger.info(f"Worker 3 (ID {worker_id}): Finalizado")
+
+
+# Función para guardar una serie en la base de datos
+def save_series_to_db(series_data, series_exists=False, db_path=None):
+    """Guarda una serie y sus temporadas/episodios en la base de datos."""
     if not series_data:
-        logger.debug(f"Worker {worker_id} (usuario {username}): No hay datos de serie para insertar")
         return False
 
-    with db_lock:
-        connection = connect_db()
-        cursor = connection.cursor()
-        series_id = None
+    connection = connect_db(db_path)
+    cursor = connection.cursor()
 
-        try:
-            # Iniciar transacción
-            connection.execute("BEGIN TRANSACTION")
-
-            # Insertar la serie
+    try:
+        # Si la serie ya existe, usar el ID existente
+        if series_exists:
+            series_id = series_data.get("id")
+            logger.info(f"Usando serie existente con ID {series_id}: {series_data['title']}")
+        else:
+            # Insertar nueva serie
+            logger.info(f"Insertando nueva serie: {series_data['title']} ({series_data['year']})")
             cursor.execute('''
                 INSERT INTO media_downloads (title, year, imdb_rating, genre, type)
                 VALUES (?, ?, ?, ?, 'serie')
             ''', (series_data["title"], series_data["year"], series_data["imdb_rating"], series_data["genre"]))
             series_id = cursor.lastrowid
-
             if not series_id:
-                logger.error(
-                    f"Worker {worker_id} (usuario {username}): Error al insertar la serie: {series_data['title']}")
-                connection.rollback()
+                logger.error(f"Error al insertar la serie. Abortando.")
+                connection.close()
                 return False
+            with stats_lock:
+                stats['new_series'] += 1
 
-            logger.info(
-                f"Worker {worker_id} (usuario {username}): Serie insertada: {series_data['title']} con ID: {series_id}")
+        # Procesar temporadas y episodios
+        for season_data in series_data["seasons"]:
+            season_number = season_data["number"]
 
-            # Insertar temporadas y episodios
-            for season in series_data["seasons"]:
-                season_number = season["season_number"]
+            # Verificar si la temporada existe
+            season_exists_flag, season_id = season_exists(series_id, season_number, connection, db_path)
 
-                # Insertar temporada
+            # Si la temporada no existe, insertarla
+            if not season_exists_flag:
+                logger.info(f"Temporada {season_number} no encontrada. Insertando nueva temporada.")
                 cursor.execute('''
                     INSERT INTO series_seasons (movie_id, season)
                     VALUES (?, ?)
                 ''', (series_id, season_number))
                 season_id = cursor.lastrowid
-
                 if not season_id:
-                    logger.error(
-                        f"Worker {worker_id} (usuario {username}): Error al insertar la temporada {season_number} para la serie ID: {series_id}")
-                    connection.rollback()
+                    logger.error(f"Error al insertar la temporada. Abortando.")
+                    connection.close()
                     return False
+                with stats_lock:
+                    stats['new_seasons'] += 1
+            else:
+                logger.info(f"Temporada {season_number} encontrada con ID {season_id}")
+                with stats_lock:
+                    stats['skipped_seasons'] += 1
 
-                logger.info(
-                    f"Worker {worker_id} (usuario {username}): Temporada insertada: {season_number} para serie ID: {series_id} con temporada ID: {season_id}")
+            # Procesar episodios
+            for episode_data in season_data["episodes"]:
+                episode_number = episode_data["number"]
+                episode_title = episode_data["title"]
 
-                # Insertar episodios y enlaces
-                for episode in season["episodes"]:
-                    episode_number = episode["episode_number"]
-                    episode_title = episode["title"]
+                # Verificar si el episodio existe
+                episode_exists_flag, episode_id = episode_exists(season_id, episode_number, episode_title)
 
-                    # Insertar episodio
+                # Si el episodio no existe, insertarlo
+                if not episode_exists_flag:
+                    logger.info(f"Episodio {episode_number} no encontrado. Insertando nuevo episodio.")
                     cursor.execute('''
                         INSERT INTO series_episodes (season_id, episode, title)
                         VALUES (?, ?, ?)
                     ''', (season_id, episode_number, episode_title))
                     episode_id = cursor.lastrowid
-
                     if not episode_id:
-                        logger.error(
-                            f"Worker {worker_id} (usuario {username}): Error al insertar el episodio {episode_number} para la temporada ID: {season_id}")
-                        connection.rollback()
+                        logger.error(f"Error al insertar el episodio. Abortando.")
+                        connection.close()
                         return False
-
-                    logger.info(
-                        f"Worker {worker_id} (usuario {username}): Episodio insertado: {episode_number} - {episode_title} con ID: {episode_id}")
-
-                    # Insertar enlaces del episodio
-                    for link in episode["links"]:
-                        # Insertar el servidor si no existe
-                        cursor.execute('''
-                            INSERT OR IGNORE INTO servers (name) VALUES (?)
-                        ''', (link["server"],))
-                        cursor.execute('''
-                            SELECT id FROM servers WHERE name=?
-                        ''', (link["server"],))
-                        server_id = cursor.fetchone()["id"]
-
-                        # Insertar la calidad si no existe
-                        cursor.execute('''
-                            SELECT quality_id FROM qualities WHERE quality=?
-                        ''', (link["quality"],))
-                        quality_result = cursor.fetchone()
-
-                        if not quality_result:
-                            cursor.execute('''
-                                INSERT INTO qualities (quality) VALUES (?)
-                            ''', (link["quality"],))
-                            cursor.execute('''
-                                SELECT quality_id FROM qualities WHERE quality=?
-                            ''', (link["quality"],))
-                            quality_result = cursor.fetchone()
-
-                        quality_id = quality_result["quality_id"]
-
-                        # Insertar el enlace
-                        cursor.execute('''
-                            INSERT INTO links_files_download (episode_id, server_id, language, link, quality_id)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (episode_id, server_id, link["language"], link["link"], quality_id))
-
-                        logger.debug(
-                            f"Worker {worker_id} (usuario {username}): Enlace insertado: episode_id={episode_id}, server={link['server']}, language={link['language']}")
-
-            # Confirmar la transacción
-            connection.commit()
-            logger.info(
-                f"Worker {worker_id} (usuario {username}): Serie completa insertada con éxito: {series_data['title']} con ID: {series_id}")
-            return True
-        except Exception as e:
-            logger.error(
-                f"Worker {worker_id} (usuario {username}): Error al insertar la serie con sus temporadas y episodios: {e}")
-            connection.rollback()
-            return False
-        finally:
-            cursor.close()
-            connection.close()
-
-
-# Función para guardar el progreso
-def save_progress(letter_index, pending_urls=None, completed_urls=None):
-    with progress_lock:
-        try:
-            # Cargar datos existentes si el archivo existe
-            if os.path.exists(progress_file):
-                with open(progress_file, 'r') as f:
-                    progress_data = json.load(f)
-            else:
-                progress_data = {
-                    'letter_index': 0,
-                    'pending_urls': [],
-                    'completed_urls': [],
-                    'last_update': '',
-                    'restart_count': 0
-                }
-
-            # Actualizar datos
-            progress_data['letter_index'] = letter_index
-
-            if pending_urls is not None:
-                progress_data['pending_urls'] = pending_urls
-
-            if completed_urls is not None:
-                progress_data['completed_urls'] = completed_urls
-
-            progress_data['last_update'] = time.strftime('%Y-%m-%d %H:%M:%S')
-
-            # Guardar los datos actualizados
-            with open(progress_file, 'w') as f:
-                json.dump(progress_data, f)
-
-            logger.debug(
-                f"Progreso guardado: índice letra {letter_index}, URLs pendientes: {len(pending_urls) if pending_urls else 0}, URLs completadas: {len(completed_urls) if completed_urls else 0}")
-        except Exception as e:
-            logger.error(f"Error al guardar el progreso: {e}")
-
-# Función para cargar el progreso
-def load_progress():
-    try:
-        if os.path.exists(progress_file):
-            with open(progress_file, 'r') as f:
-                progress = json.load(f)
-                logger.info(f"Progreso cargado: índice letra {progress['letter_index']}")
-
-                # Cargar URLs pendientes y completadas
-                pending_urls = progress.get('pending_urls', [])
-                completed_urls = progress.get('completed_urls', [])
-
-                logger.info(f"URLs pendientes cargadas: {len(pending_urls)}")
-                logger.info(f"URLs completadas cargadas: {len(completed_urls)}")
-
-                if 'restart_count' in progress:
-                    global restart_count
-                    restart_count = progress['restart_count']
-                logger.info(f"Contador de reinicios cargado: {restart_count}/{MAX_RESTARTS}")
-
-                return progress['letter_index'], pending_urls, completed_urls
-    except Exception as e:
-        logger.error(f"Error al cargar el progreso: {e}")
-
-    logger.info("No se encontró archivo de progreso o hubo un error. Comenzando desde el principio.")
-    return 0, [], []
-
-
-# Función para extraer URLs de series de una página
-def extract_series_urls_from_page(driver, page_url, letter):
-    logger.info(f"Extrayendo URLs de series de la página: {page_url}")
-    try:
-        driver.get(page_url)
-        time.sleep(1)  # Esperar a que se cargue la página
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "lxml")
-
-        # Buscar todos los divs de las series
-        series_divs = soup.find_all("div", class_="span-6 inner-6 tt view")
-        logger.info(f"Encontradas {len(series_divs)} series en la página {page_url}")
-
-        # Guardar las URLs de las series
-        series_urls = []
-        for i, div in enumerate(series_divs):
-            try:
-                link_tag = div.find("a")
-                if link_tag and link_tag.has_attr('href'):
-                    series_url = base_url + link_tag['href']
-                    series_urls.append((i, series_url))
-            except Exception as e:
-                logger.error(f"Error al obtener la URL de la serie en el índice {i}: {e}")
-
-        return series_urls
-    except Exception as e:
-        logger.error(f"Error al extraer URLs de series de la página {page_url}: {e}")
-        return []
-
-
-# Función worker para procesar series con una cuenta específica
-def series_worker(worker_id):
-    # Asignar credenciales específicas a este worker
-    worker_index = (worker_id - 1) % len(user_credentials)
-    credentials = user_credentials[worker_index]
-    username = credentials["username"]
-    password = credentials["password"]
-
-    # Crear un driver para este worker
-    driver = create_driver()
-
-    # Iniciar sesión con este driver usando las credenciales asignadas
-    if not login(driver, username, password):
-        logger.error(f"Worker {worker_id}: No se pudo iniciar sesión con usuario {username}. Abortando...")
-        driver.quit()
-        return
-
-    logger.info(f"Worker {worker_id}: Iniciado con usuario {username} y listo para procesar series")
-
-    try:
-        while True:
-            try:
-                # Obtener una URL de serie de la cola
-                index, series_url = series_queue.get(block=False)
-
-                logger.info(f"Worker {worker_id} (usuario {username}): Procesando serie {index}: {series_url}")
-
-                # Intentar extraer los detalles de la serie con reintentos
-                success = False
-                series_details = None
-
-                # Primer conjunto de 3 intentos
-                for attempt in range(3):
-                    try:
-                        series_details = extract_series_details(driver, series_url, worker_id, username)
-                        success = True
-                        break  # Salir del bucle de reintentos si tiene éxito
-                    except Exception as e:
-                        logger.error(
-                            f"Worker {worker_id} (usuario {username}): Error al extraer datos de la serie {series_url}: {e}")
-                        if attempt < 2:
-                            logger.info(
-                                f"Worker {worker_id} (usuario {username}): Reintentando en 5 segundos... (Intento {attempt + 1}/3)")
-                            time.sleep(5)
-
-                # Si después de 3 intentos no hay éxito, reiniciar el driver y probar 3 veces más
-                if not success:
-                    logger.info(
-                        f"Worker {worker_id} (usuario {username}): Reiniciando el driver después de 3 intentos fallidos...")
-                    driver.quit()
-                    all_drivers.remove(driver)  # Eliminar de la lista global
-                    driver = create_driver()
-                    if login(driver, username, password):
-                        # Segundo conjunto de 3 intentos después de reiniciar el driver
-                        for attempt in range(3):
-                            try:
-                                series_details = extract_series_details(driver, series_url, worker_id, username)
-                                success = True
-                                break  # Salir del bucle de reintentos si tiene éxito
-                            except Exception as e:
-                                logger.error(
-                                    f"Worker {worker_id} (usuario {username}): Error al extraer datos de la serie {series_url} después de reiniciar: {e}")
-                                if attempt < 2:
-                                    logger.info(
-                                        f"Worker {worker_id} (usuario {username}): Reintentando en 5 segundos... (Intento {attempt + 1}/3 después de reiniciar)")
-                                    time.sleep(5)
-                    else:
-                        logger.error(
-                            f"Worker {worker_id} (usuario {username}): No se pudo iniciar sesión después de reiniciar el driver.")
-
-                # Si se obtuvieron los detalles de la serie, insertarlos en la base de datos
-                if success and series_details:
-                    insert_success = insert_series_with_seasons_and_episodes(series_details, worker_id, username)
-
-                    # Actualizar listas de URLs procesadas
-                    with progress_lock:
-                        # Cargar progreso actual
-                        if os.path.exists(progress_file):
-                            with open(progress_file, 'r') as f:
-                                progress_data = json.load(f)
-                                pending_urls = progress_data.get('pending_urls', [])
-                                completed_urls = progress_data.get('completed_urls', [])
-                        else:
-                            pending_urls = []
-                            completed_urls = []
-
-                        # Actualizar listas
-                        if series_url in pending_urls:
-                            pending_urls.remove(series_url)
-
-                        if insert_success and series_url not in completed_urls:
-                            completed_urls.append(series_url)
-
-                        # Guardar progreso actualizado
-                        with open(progress_file, 'w') as f:
-                            progress_data = {
-                                'letter_index': progress_data.get('letter_index', 0),
-                                'pending_urls': pending_urls,
-                                'completed_urls': completed_urls,
-                                'last_update': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'restart_count': restart_count
-                            }
-                            json.dump(progress_data, f)
-
-                # Marcar la tarea como completada
-                series_queue.task_done()
-
-            except Exception as e:
-                if "queue.Empty" in str(e.__class__):
-                    # La cola está vacía, esperar un poco y volver a intentar
-                    time.sleep(1)
-                    # Si la cola sigue vacía después de esperar, salir del bucle
-                    if series_queue.empty():
-                        logger.info(
-                            f"Worker {worker_id} (usuario {username}): No hay más series para procesar. Finalizando.")
-                        break
+                    with stats_lock:
+                        stats['new_episodes'] += 1
                 else:
-                    logger.error(f"Worker {worker_id} (usuario {username}): Error inesperado: {e}")
-                    time.sleep(1)
-    finally:
-        # Cerrar el driver al finalizar
-        try:
-            driver.quit()
-            if driver in all_drivers:
-                all_drivers.remove(driver)
-        except:
-            pass
-        logger.info(f"Worker {worker_id} (usuario {username}): Finalizado y driver cerrado.")
+                    logger.info(f"Episodio {episode_number} encontrado con ID {episode_id}")
+                    with stats_lock:
+                        stats['skipped_episodes'] += 1
 
+                # Procesar enlaces del episodio
+                if "links" in episode_data and episode_data["links"]:
+                    for link_data in episode_data["links"]:
+                        # Insertar servidor si no existe
+                        cursor.execute("SELECT id FROM servers WHERE name = ?", (link_data["server"],))
+                        server_result = cursor.fetchone()
+                        if server_result:
+                            server_id = server_result[0]
+                        else:
+                            cursor.execute("INSERT INTO servers (name) VALUES (?)", (link_data["server"],))
+                            server_id = cursor.lastrowid
 
-# Función principal para extraer todas las series
-def extract_all_series():
-    # Inicializar la base de datos si es necesario
-    initialize_db()
+                        # Insertar calidad si no existe
+                        cursor.execute("SELECT quality_id FROM qualities WHERE quality = ?", (link_data["quality"],))
+                        quality_result = cursor.fetchone()
+                        if quality_result:
+                            quality_id = quality_result[0]
+                        else:
+                            cursor.execute("INSERT INTO qualities (quality) VALUES (?)", (link_data["quality"],))
+                            quality_id = cursor.lastrowid
 
-    # Crear un driver principal para la navegación por páginas
-    main_driver = create_driver()
+                        # Verificar si el enlace ya existe
+                        cursor.execute(
+                             "SELECT id FROM links_files_download WHERE episode_id = ? AND server_id = ? AND link = ?",
+                            (episode_id, server_id, link_data["url"])
+                        )
+                        link_exists = cursor.fetchone()
 
-    # Usar la primera cuenta para el driver principal
-    main_credentials = user_credentials[0]
-    if not login(main_driver, main_credentials["username"], main_credentials["password"]):
-        logger.error(
-            f"No se pudo iniciar sesión con el driver principal usando {main_credentials['username']}. Abortando...")
-        main_driver.quit()
-        all_drivers.remove(main_driver)
-        return
+                        if not link_exists:
+                            # Insertar el enlace
+                            cursor.execute(
+                                """
+                                INSERT INTO links_files_download 
+                                (movie_id, server_id, language, link, quality_id, episode_id) 
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                """,
+                                (series_id, server_id, link_data["language"], link_data["url"], quality_id, episode_id)
+                            )
+                            logger.info(
+                                f"Nuevo enlace insertado para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
+                            with stats_lock:
+                                stats['new_links'] += 1
+                        else:
+                            logger.debug(
+                                f"Enlace ya existe para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
 
-    # Lista de letras del alfabeto para recorrer
-    alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ#")
-
-    # Cargar el progreso guardado
-    letter_index, pending_urls, completed_urls = load_progress()
-
-    try:
-        # Crear un pool de workers
-        with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            # Iniciar los workers
-            workers = [executor.submit(series_worker, i + 1) for i in range(NUM_WORKERS)]
-
-            # Si hay URLs pendientes de procesamiento, añadirlas primero a la cola
-            if pending_urls:
-                logger.info(f"Añadiendo {len(pending_urls)} URLs pendientes a la cola...")
-                for i, url in enumerate(pending_urls):
-                    series_queue.put((i, url))
-                    logger.debug(f"Añadida serie pendiente {i} a la cola: {url}")
-
-                # Esperar a que se procesen las URLs pendientes
-                logger.info("Esperando a que se procesen las URLs pendientes...")
-                start_time = time.time()
-                max_wait_time = 600  # 10 minutos máximo de espera
-
-                while not series_queue.empty():
-                    if time.time() - start_time > max_wait_time:
-                        logger.warning(
-                            "Tiempo de espera excedido para las URLs pendientes. Continuando con el proceso normal.")
-                        break
-                    time.sleep(5)  # Esperar 5 segundos y verificar de nuevo
-
-            # Procesar letras una por una
-            for i in range(letter_index, len(alphabet)):
-                letter = alphabet[i]
-                page_url = f"{series_url}{letter}"
-                logger.info(f"Procesando letra {letter}: {page_url}")
-
-                # Extraer URLs de series de la página actual
-                series_urls = extract_series_urls_from_page(main_driver, page_url, letter)
-
-                # Si no hay series en esta página, pasar a la siguiente letra
-                if not series_urls:
-                    logger.info(f"No se encontraron series para la letra {letter}. Pasando a la siguiente.")
-                    # Actualizar el índice de letra en el archivo de progreso
-                    save_progress(i + 1, pending_urls, completed_urls)
-                    continue
-
-                # Filtrar URLs ya completadas
-                new_urls = []
-                for index, url in series_urls:
-                    if url not in completed_urls and url not in pending_urls:
-                        new_urls.append((index, url))
-                        pending_urls.append(url)  # Añadir a la lista de pendientes
-
-                logger.info(f"Encontradas {len(new_urls)} nuevas series para procesar con la letra {letter}")
-
-                # Añadir las URLs a la cola para que los workers las procesen
-                for index, url in new_urls:
-                    series_queue.put((index, url))
-                    logger.debug(f"Añadida serie {index} a la cola: {url}")
-
-                # Guardar el progreso después de añadir todas las URLs a la cola
-                save_progress(i, pending_urls, completed_urls)
-
-                # Esperar a que la cola esté vacía antes de pasar a la siguiente letra
-                # pero con un timeout para evitar bloqueos
-                start_time = time.time()
-                max_wait_time = 300  # 5 minutos máximo de espera
-
-                while not series_queue.empty():
-                    if time.time() - start_time > max_wait_time:
-                        logger.warning(
-                            f"Tiempo de espera excedido para la letra {letter}. Continuando con la siguiente letra.")
-                        break
-                    time.sleep(5)  # Esperar 5 segundos y verificar de nuevo
-
-                # Actualizar las listas de URLs pendientes y completadas
-                with progress_lock:
-                    if os.path.exists(progress_file):
-                        with open(progress_file, 'r') as f:
-                            progress_data = json.load(f)
-                            pending_urls = progress_data.get('pending_urls', [])
-                            completed_urls = progress_data.get('completed_urls', [])
-
-                # Actualizar el índice de letra en el archivo de progreso
-                save_progress(i + 1, pending_urls, completed_urls)
-
-                logger.info(f"Procesamiento de la letra {letter} completado o tiempo de espera excedido.")
-
-            # Esperar a que se completen todas las tareas restantes
-            logger.info("Esperando a que se completen todas las tareas restantes...")
-            start_time = time.time()
-            max_wait_time = 300  # 5 minutos máximo de espera
-
-            while not series_queue.empty():
-                if time.time() - start_time > max_wait_time:
-                    logger.warning("Tiempo de espera excedido para las tareas restantes. Finalizando.")
-                    break
-                time.sleep(5)  # Esperar 5 segundos y verificar de nuevo
-
-            # Cancelar los workers
-            for worker in workers:
-                worker.cancel()
-
-            logger.info("Todos los workers han finalizado o han sido cancelados.")
+        connection.commit()
+        return True
 
     except Exception as e:
-        logger.critical(f"Error crítico en el proceso principal: {e}")
-        # Guardar el progreso antes de salir
-        save_progress(letter_index, pending_urls, completed_urls)
+        logger.error(f"Error al guardar la serie en la base de datos: {e}")
+        logger.debug(traceback.format_exc())
+        connection.rollback()
+        return False
+
     finally:
-        # Cerrar el driver principal
+        cursor.close()
+        connection.close()
+
+
+# Worker 4: Ayuda a los otros workers según sea necesario
+def worker4_helper(db_path, progress_data, worker_id=0):
+    logger.info(f"Worker 4 (ID {worker_id}): Iniciando ayuda a otros workers")
+
+    while not stop_event.is_set():
         try:
+            # Obtener datos de la cola con timeout
+            try:
+                data = processed_series_queue.get(timeout=5)
+            except Empty:
+                # Si la cola está vacía y los workers anteriores han terminado, salir
+                if (processed_series_queue.empty() and series_data_queue.empty() and
+                        (not worker1_active.is_set() and not worker2_active.is_set())):
+                    logger.info(
+                        f"Worker 4 (ID {worker_id}): No hay más tareas para procesar y workers anteriores han terminado")
+                    break
+                # Si la cola está vacía pero algún worker anterior sigue activo, esperar
+                logger.debug(
+                    f"Worker 4 (ID {worker_id}): Cola vacía, pero workers anteriores siguen activos. Esperando...")
+                time.sleep(2)
+                continue
+
+            series_url = data["series_url"]
+            series_data = data["series_data"]
+
+            logger.info(f"Worker 4 (ID {worker_id}): Ayudando con tareas adicionales para: {series_url}")
+
+            # Aquí puedes implementar tareas adicionales como:
+            # - Extraer enlaces de streaming
+            # - Descargar imágenes
+            # - Generar estadísticas adicionales
+            # - Etc.
+
+            # Por ahora, simplemente registramos que la serie fue procesada completamente
+            logger.info(f"Worker 4 (ID {worker_id}): Serie procesada completamente: {series_url}")
+
+            # Marcar la tarea como completada
+            processed_series_queue.task_done()
+
+        except Exception as e:
+            logger.error(f"Worker 4 (ID {worker_id}): Error al procesar tarea: {e}")
+            logger.debug(traceback.format_exc())
+            with stats_lock:
+                stats['errors'] += 1
+            # Marcar la tarea como completada para no bloquear la cola
+            try:
+                processed_series_queue.task_done()
+            except:
+                pass
+
+    logger.info(f"Worker 4 (ID {worker_id}): Finalizado")
+
+
+# Función para generar informe de actualización
+def generate_update_report(start_time):
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds() / 60  # en minutos
+
+    # Generar informe
+    report = f"""
+INFORME DE ACTUALIZACIÓN DE SERIES - {end_time.strftime('%Y-%m-%d %H:%M:%S')}
+===========================================================================
+
+Duración: {duration:.2f} minutos
+
+RESUMEN:
+- Páginas procesadas: {stats['pages_processed']}
+- Series encontradas: {stats['series_found']}
+- Series procesadas: {stats['series_processed']}
+- Series saltadas (ya actualizadas): {stats['skipped_series']}
+- Nuevas series añadidas: {stats['new_series']}
+- Temporadas saltadas (ya existentes): {stats['skipped_seasons']}
+- Nuevas temporadas añadidas: {stats['new_seasons']}
+- Episodios saltados (ya existentes): {stats['skipped_episodes']}
+- Nuevos episodios añadidos: {stats['new_episodes']}
+- Nuevos enlaces añadidos: {stats['new_links']}
+- Errores: {stats['errors']}
+
+===========================================================================
+Este es un mensaje automático generado por el sistema de actualización de series.
+"""
+
+    return report
+
+
+# Función principal para procesar todas las series
+def process_all_series(start_page=1, max_pages=None, db_path=None):
+    """Procesa todas las series disponibles."""
+    global worker2_drivers
+    start_time = datetime.now()
+    logger.info(f"Iniciando procesamiento de series: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        # Configurar la base de datos
+        setup_database(logger, db_path)
+
+        # Limpiar caché antes de comenzar
+        clear_cache()
+
+        # Cargar progreso anterior
+        progress_data = load_progress(PROGRESS_FILE, {})
+
+        # Crear drivers para los workers
+        main_driver = create_driver()  # Para Worker 1
+        worker2_drivers = []  # Para Worker 2
+
+        # Primero hacer login con el driver principal
+        if not login(main_driver, logger):
+            logger.error("No se pudo iniciar sesión. Abortando procesamiento de series.")
             main_driver.quit()
-            if main_driver in all_drivers:
-                all_drivers.remove(main_driver)
+            return
+
+        # Crear y configurar drivers para Worker 2 (2 instancias)
+        for i in range(2):
+            driver = create_driver()
+            if login(driver, logger):
+                worker2_drivers.append(driver)
+            else:
+                logger.error(
+                    f"No se pudo iniciar sesión para Worker 2 (instancia {i + 1}). Continuando con menos workers.")
+                driver.quit()
+
+        # Iniciar todos los workers en paralelo
+        threads = []
+
+        # Iniciar Worker 3 (Procesador de BD) primero para que esté listo para procesar datos
+        thread = threading.Thread(
+            target=worker3_db_processor,
+            args=(db_path, progress_data, 1),
+            name="Worker3-1"
+        )
+        threads.append(thread)
+        thread.start()
+
+        # Iniciar Worker 4 (Ayudante) también para que esté listo
+        thread = threading.Thread(
+            target=worker4_helper,
+            args=(db_path, progress_data, 1),
+            name="Worker4-1"
+        )
+        threads.append(thread)
+        thread.start()
+
+        # Iniciar Worker 2 (Extractor de datos de series)
+        for i, driver in enumerate(worker2_drivers):
+            thread = threading.Thread(
+                target=worker2_series_extractor,
+                args=(driver, db_path, i + 1),
+                name=f"Worker2-{i + 1}"
+            )
+            threads.append(thread)
+            thread.start()
+
+        # Iniciar Worker 1 (Extractor de URLs) al final
+        thread = threading.Thread(
+            target=worker1_url_extractor,
+            args=(main_driver, progress_data, start_page, max_pages),
+            name="Worker1"
+        )
+        threads.append(thread)
+        thread.start()
+
+        # Esperar a que todos los workers terminen
+        for thread in threads:
+            thread.join()
+
+        # Cerrar todos los drivers
+        main_driver.quit()
+        for driver in worker2_drivers:
+            driver.quit()
+
+        # Guardar progreso final
+        save_progress(PROGRESS_FILE, progress_data)
+
+        # Generar informe
+        report = generate_update_report(start_time)
+        logger.info(report)
+
+        logger.info(f"Procesamiento de series completado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    except Exception as e:
+        logger.critical(f"Error crítico en el procesamiento de series: {e}")
+        logger.debug(traceback.format_exc())
+        stop_event.set()  # Señalizar a todos los workers que deben detenerse
+
+    finally:
+        # Asegurarse de que todos los drivers se cierren
+        try:
+            if 'main_driver' in locals() and main_driver:
+                main_driver.quit()
+
+            if 'worker2_drivers' in locals():
+                for driver in worker2_drivers:
+                    driver.quit()
         except:
             pass
-        logger.info("Driver principal cerrado.")
 
 
 # Punto de entrada principal
 if __name__ == "__main__":
-    try:
-        logger.info("Iniciando el scraper de series con procesamiento paralelo y múltiples cuentas...")
-        # Verificar si estamos en un reinicio
-        if os.path.exists(progress_file):
-            with open(progress_file, 'r') as f:
-                progress = json.load(f)
-                if 'restart_count' in progress:
-                    restart_count = progress['restart_count']
-                    logger.info(f"Reinicio detectado. Contador de reinicios: {restart_count}/{MAX_RESTARTS}")
+    # Configurar argumentos de línea de comandos
+    parser = argparse.ArgumentParser(description='Procesamiento de series por rating IMDB')
+    parser.add_argument('--start-page', type=int, default=1, help='Página inicial para comenzar el procesamiento')
+    parser.add_argument('--max-pages', type=int, help='Número máximo de páginas a procesar')
+    parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')
+    parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')
+    parser.add_argument('--reset-progress', action='store_true',
+                        help='Reiniciar el progreso (procesar todas las series)')
 
-        # Ejecutar la extracción de todas las series
-        extract_all_series()
-        logger.info("Proceso de scraping de series completado.")
-    except Exception as e:
-        logger.critical(f"Error crítico en el scraper: {e}")
-        # Intentar guardar el progreso antes de salir
-        try:
-            letter_index, pending_urls, completed_urls = load_progress()
-            save_progress(letter_index, pending_urls, completed_urls)
-        except:
-            pass
-    finally:
-        # Asegurarse de que todos los drivers se cierren
-        close_all_drivers()
-        logger.info("Scraper finalizado.")
+    args = parser.parse_args()
+
+    # Actualizar configuración de paralelización si se especifica
+    if args.max_workers:
+        MAX_WORKERS = args.max_workers
+
+    # Reiniciar progreso si se solicita
+    if args.reset_progress and os.path.exists(PROGRESS_FILE):
+        os.remove(PROGRESS_FILE)
+        logger.info("Progreso reiniciado. Se procesarán todas las series.")
+
+    # Ejecutar el procesamiento de series
+    process_all_series(args.start_page, args.max_pages, args.db_path)

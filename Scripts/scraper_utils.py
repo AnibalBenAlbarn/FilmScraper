@@ -96,6 +96,7 @@ def create_driver(headless=True):
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-infobars")
+    options.add_argument("--disable-blink-features=AutomationControlled")
 
     # Usar webdriver-manager para gestionar el chromedriver automáticamente
     try:
