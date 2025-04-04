@@ -13,7 +13,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
-
+#ver1.7
 # Importar utilidades compartidas
 from scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
