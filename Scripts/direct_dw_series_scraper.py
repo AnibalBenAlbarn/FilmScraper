@@ -224,7 +224,8 @@ def worker4_url_extractor(driver, progress_data, start_page=2, max_pages=None):
 
             # Verificar si la página ya fue procesada
             page_key = str(current_page)
-            if page_key in progress_data['pages_even'] and progress_data['pages_even'][page_key].get('processed', False):
+            if page_key in progress_data['pages_even'] and progress_data['pages_even'][page_key].get('processed',
+                                                                                                     False):
                 logger.info(f"Worker 4: Página {current_page} ya procesada anteriormente. Saltando.")
                 current_page += 2  # Incrementar en 2 para procesar solo páginas pares
                 continue
@@ -846,8 +847,18 @@ def check_season_exists(driver, season_url, worker_id=0):
     logger.info(f"[Worker {worker_id}] Verificando si la temporada existe: {season_url}")
 
     try:
-        driver.get(season_url)
-        time.sleep(2)  # Esperar a que cargue la página
+        # Usar un enfoque más robusto para cargar la página
+        for attempt in range(3):  # Intentar hasta 3 veces
+            try:
+                driver.get(season_url)
+                time.sleep(2)  # Esperar a que cargue la página
+                break
+            except Exception as e:
+                if attempt < 2:  # Si no es el último intento
+                    logger.warning(f"[Worker {worker_id}] Error al cargar la temporada, reintentando: {e}")
+                    time.sleep(2)
+                else:
+                    raise  # Si es el último intento, propagar la excepción
 
         # Usar BeautifulSoup para analizar la página en lugar de interactuar directamente con el DOM
         page_source = driver.page_source
@@ -882,8 +893,18 @@ def process_episodes_with_soup(driver, season_url, worker_id=0):
     episodes_data = []
 
     try:
-        driver.get(season_url)
-        time.sleep(2)  # Esperar a que cargue la página
+        # Usar un enfoque más robusto para cargar la página
+        for attempt in range(3):  # Intentar hasta 3 veces
+            try:
+                driver.get(season_url)
+                time.sleep(2)  # Esperar a que cargue la página
+                break
+            except Exception as e:
+                if attempt < 2:  # Si no es el último intento
+                    logger.warning(f"[Worker {worker_id}] Error al cargar la temporada, reintentando: {e}")
+                    time.sleep(2)
+                else:
+                    raise  # Si es el último intento, propagar la excepción
 
         # Obtener el HTML de la página
         page_source = driver.page_source
@@ -1055,6 +1076,14 @@ def extract_episode_links(driver, episode_url, worker_id=0):
                     logger.warning(
                         f"[Worker {worker_id}] Timeout esperando enlaces en episodio {episode_url} después de {max_retries} intentos")
                     return links
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"[Worker {worker_id}] Error al cargar la página: {e}. Reintentando...")
+                    time.sleep(2)
+                else:
+                    logger.error(
+                        f"[Worker {worker_id}] Error al cargar la página después de {max_retries} intentos: {e}")
+                    return links
 
         # Obtener el HTML de la página para analizar con BeautifulSoup
         page_source = driver.page_source
@@ -1111,40 +1140,76 @@ def extract_episode_links(driver, episode_url, worker_id=0):
                 # Ahora necesitamos hacer clic en el selector para mostrar el enlace
                 # Para esto, necesitamos usar Selenium
                 try:
-                    # Encontrar el selector en la página actual usando un identificador único
-                    # Podemos usar el texto del servidor como identificador
-                    selector_elements = driver.find_elements(By.CLASS_NAME, "embed-selector")
+                    # Crear un nuevo driver para cada enlace para evitar problemas de conexión
+                    temp_driver = None
+                    try:
+                        # Usar el driver existente primero
+                        # Encontrar el selector en la página actual usando un identificador único
+                        selector_elements = driver.find_elements(By.CLASS_NAME, "embed-selector")
 
-                    if i < len(selector_elements):
-                        # Hacer clic en el selector
-                        selector_elements[i].click()
-                        time.sleep(1)  # Esperar a que se muestre el enlace
+                        if i < len(selector_elements):
+                            # Hacer clic en el selector
+                            try:
+                                selector_elements[i].click()
+                                time.sleep(1)  # Esperar a que se muestre el enlace
+                            except Exception as click_error:
+                                logger.warning(
+                                    f"[Worker {worker_id}] Error al hacer clic en el selector {i + 1}: {click_error}")
+                                # Si falla el clic, intentar con JavaScript
+                                driver.execute_script("arguments[0].click();", selector_elements[i])
+                                time.sleep(1)
 
-                        # Buscar el iframe con el enlace
-                        try:
-                            embed_movie = WebDriverWait(driver, 5).until(
-                                EC.presence_of_element_located((By.CLASS_NAME, "embed-movie"))
-                            )
-                            iframe = embed_movie.find_element(By.TAG_NAME, "iframe")
-                            link_url = iframe.get_attribute("src")
+                            # Buscar el iframe con el enlace
+                            try:
+                                embed_movie = WebDriverWait(driver, 5).until(
+                                    EC.presence_of_element_located((By.CLASS_NAME, "embed-movie"))
+                                )
+                                iframe = embed_movie.find_element(By.TAG_NAME, "iframe")
+                                link_url = iframe.get_attribute("src")
 
-                            # Añadir el enlace a la lista
-                            links.append({
-                                "language": language,
-                                "server": server,
-                                "quality": quality,
-                                "url": link_url
-                            })
+                                # Añadir el enlace a la lista
+                                links.append({
+                                    "language": language,
+                                    "server": server,
+                                    "quality": quality,
+                                    "url": link_url
+                                })
 
-                            logger.info(f"[Worker {worker_id}] Enlace extraído: {link_url}")
-                        except (TimeoutException, NoSuchElementException, StaleElementReferenceException) as e:
-                            logger.error(f"[Worker {worker_id}] Error al obtener iframe: {e}")
-                            continue
-                    else:
-                        logger.warning(f"[Worker {worker_id}] No se pudo encontrar el selector {i + 1} en la página")
+                                logger.info(f"[Worker {worker_id}] Enlace extraído: {link_url}")
+                            except (TimeoutException, NoSuchElementException, StaleElementReferenceException) as e:
+                                logger.error(f"[Worker {worker_id}] Error al obtener iframe: {e}")
+                                # Intentar extraer el enlace directamente del HTML
+                                try:
+                                    updated_page_source = driver.page_source
+                                    updated_soup = BeautifulSoup(updated_page_source, "html.parser")
+                                    embed_movie_div = updated_soup.find("div", class_="embed-movie")
+                                    if embed_movie_div:
+                                        iframe_tag = embed_movie_div.find("iframe")
+                                        if iframe_tag and 'src' in iframe_tag.attrs:
+                                            link_url = iframe_tag['src']
+                                            links.append({
+                                                "language": language,
+                                                "server": server,
+                                                "quality": quality,
+                                                "url": link_url
+                                            })
+                                            logger.info(f"[Worker {worker_id}] Enlace extraído desde HTML: {link_url}")
+                                except Exception as html_error:
+                                    logger.error(
+                                        f"[Worker {worker_id}] Error al extraer enlace desde HTML: {html_error}")
+                        else:
+                            logger.warning(
+                                f"[Worker {worker_id}] No se pudo encontrar el selector {i + 1} en la página")
+
+                    except Exception as e:
+                        logger.error(f"[Worker {worker_id}] Error al hacer clic en el selector {i + 1}: {e}")
+                        continue
+                    finally:
+                        if temp_driver:
+                            temp_driver.quit()
 
                 except Exception as e:
-                    logger.error(f"[Worker {worker_id}] Error al hacer clic en el selector {i + 1}: {e}")
+                    logger.error(f"[Worker {worker_id}] Error al procesar selector {i + 1}: {e}")
                     continue
 
             except Exception as e:
