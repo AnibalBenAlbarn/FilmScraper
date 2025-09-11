@@ -1,47 +1,39 @@
-# React + TypeScript + Vite
+# HDFull Scrapers
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This project contains utilities to scrape data from the HDFull website and manage the collected information.
 
-Currently, two official plugins are available:
+## Windows setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+A convenience batch script is included to create an isolated Python environment, install dependencies and launch the main application.
 
-## Expanding the ESLint configuration
+1. Double-click `run.bat` (or execute it from a command prompt).
+2. The script will create a `venv` virtual environment if it does not yet exist.
+3. Required packages from `requirements.txt` will be installed.
+4. Finally the script runs `python main.py`. Any command-line arguments passed to the batch file are forwarded to the Python program.
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+Example:
 
-- Configure the top-level `parserOptions` property like this:
+```bat
+run.bat --series --start-page 2
+```
 
+This executes the series scraper starting at page 2.
 
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+## Manual setup (non-Windows)
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+If you are running the project on another platform, perform the steps manually:
 
-// eslint.config.js
-import react from 'eslint-plugin-react'
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
 
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
+## Repository structure
+
+- `main.py` – Entry point that displays the application menu or accepts command line arguments.
+- `Scripts/` – Helper modules used by the scraper.
+- `run.bat` – Windows helper to bootstrap the environment and execute `main.py`.
+
+Logs and the virtual environment are ignored by git.
