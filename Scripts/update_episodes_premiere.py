@@ -987,7 +987,7 @@ def process_premiere_episodes(db_path=None):
 
 
 # Punto de entrada principal
-if __name__ == "____main__":
+if __name__ == "__main__":
     # Configurar argumentos de línea de comandos
     parser = argparse.ArgumentParser(description='Actualización de episodios de estreno')
     parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')

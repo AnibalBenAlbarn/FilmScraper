@@ -808,20 +808,34 @@ def insert_season(series_id, season_number, connection=None, db_path=None):
 
 # Función para insertar un nuevo episodio
 def insert_episode(season_id, episode_number, title, connection=None, db_path=None):
-    """Inserta un nuevo episodio en la base de datos."""
+    """Inserta un nuevo episodio en la base de datos evitando duplicados."""
     close_connection = False
     if connection is None:
         connection = connect_db(db_path)
         close_connection = True
 
+    # Comprobar si el episodio ya existe
+    exists, existing_id = episode_exists(
+        season_id,
+        episode_number,
+        title,
+        connection=connection,
+        db_path=db_path,
+    )
+    if exists:
+        return existing_id
+
     cursor = connection.cursor()
     episode_id = None
 
     try:
-        cursor.execute('''
+        cursor.execute(
+            '''
             INSERT INTO series_episodes (season_id, episode, title)
             VALUES (?, ?, ?)
-        ''', (season_id, episode_number, title))
+            ''',
+            (season_id, episode_number, title),
+        )
         episode_id = cursor.lastrowid
         connection.commit()
 
