@@ -7,8 +7,16 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from datetime import datetime
 
+# Ensure Scripts directory is in sys.path
+SCRIPT_DIR = os.path.join(os.path.dirname(__file__), "Scripts")
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+
 # Import scraper modules
 from scraper_utils import setup_database, connect_db, PROJECT_ROOT, setup_logger
+from direct_dw_series_scraper import process_all_series
+from update_episodes_premiere import process_premiere_episodes
+from update_episodes_updated import process_updated_episodes
 
 # Configure logger
 logger = setup_logger("main", "main.log")
@@ -125,9 +133,11 @@ def series_scraper_menu():
     print("2. Start scraping from specific page")
     print("3. Scrape specific number of pages")
     print("4. Reset progress and start from page 1")
-    print("5. Back to main menu")
+    print("5. Update latest episodes")
+    print("6. Update recently updated episodes")
+    print("7. Back to main menu")
 
-    choice = input("\\nEnter your choice (1-5): ")
+    choice = input("\\nEnter your choice (1-7): ")
 
     if choice == '1':
         # Start from page 1
@@ -170,6 +180,18 @@ def series_scraper_menu():
         return series_scraper_menu()
 
     elif choice == '5':
+        # Update latest episodes
+        process_premiere_episodes()
+        input("\\nUpdate completed. Press Enter to continue...")
+        return series_scraper_menu()
+
+    elif choice == '6':
+        # Update recently updated episodes
+        process_updated_episodes()
+        input("\\nUpdate completed. Press Enter to continue...")
+        return series_scraper_menu()
+
+    elif choice == '7':
         return
 
     else:
