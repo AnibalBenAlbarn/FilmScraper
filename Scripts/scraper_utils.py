@@ -33,16 +33,18 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Configuración de la base de datos
 DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
+TORRENT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_db.db")
 
-# Archivo de configuración para persistir la ruta de la base de datos
+# Archivo de configuración para persistir las rutas de las bases de datos
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "db_config.json")
 
-# Cargar la ruta almacenada si existe
+# Cargar las rutas almacenadas si existen
 if os.path.exists(CONFIG_FILE):
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         DB_PATH = data.get('db_path', DB_PATH)
+        TORRENT_DB_PATH = data.get('torrent_db_path', TORRENT_DB_PATH)
     except Exception:
         pass
 
@@ -57,17 +59,46 @@ CACHE = {
 }
 
 
+def _load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_config(data):
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Error guardando configuración: {e}")
+
+
 def set_db_path(path):
-    """Actualiza y persiste la ruta de la base de datos."""
+    """Actualiza y persiste la ruta de la base de datos directa."""
     global DB_PATH
     DB_PATH = os.path.abspath(path)
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'db_path': DB_PATH}, f, indent=2)
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error guardando la ruta de la base de datos: {e}")
+    data = _load_config()
+    data['db_path'] = DB_PATH
+    data.setdefault('torrent_db_path', TORRENT_DB_PATH)
+    _save_config(data)
     logging.getLogger(__name__).info(f"Ruta de base de datos establecida en: {DB_PATH}")
+
+
+def set_torrent_db_path(path):
+    """Actualiza y persiste la ruta de la base de datos torrent."""
+    global TORRENT_DB_PATH
+    TORRENT_DB_PATH = os.path.abspath(path)
+    os.makedirs(os.path.dirname(TORRENT_DB_PATH), exist_ok=True)
+    data = _load_config()
+    data['torrent_db_path'] = TORRENT_DB_PATH
+    data.setdefault('db_path', DB_PATH)
+    _save_config(data)
+    logging.getLogger(__name__).info(f"Ruta de base de datos torrent establecida en: {TORRENT_DB_PATH}")
 
 
 def set_max_workers(value):
