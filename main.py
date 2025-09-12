@@ -50,7 +50,7 @@ def setup_database_menu():
     """Menu for setting up the database."""
     clear_screen()
     print("\n===== DATABASE SETUP =====")
-    print("1. Create database")
+    print("1. Create database(s)")
     print("2. Set database path")
     print("3. Run database script")
     print("4. Back to main menu")
@@ -58,21 +58,83 @@ def setup_database_menu():
     choice = input("\nEnter your choice (1-4): ")
 
     if choice == '1':
-        # Create the database with the default structure
-        from scraper_utils import DB_PATH
-        from db_setup import create_direct_db
+        # Submenu to select which database(s) to create
+        clear_screen()
+        print("\n--- SELECT DATABASE TO CREATE ---")
+        print("1. Direct database")
+        print("2. Torrent database")
+        print("3. Both databases")
+        print("4. Back")
 
-        if create_direct_db(DB_PATH) and setup_database(logger, DB_PATH):
-            print(f"\nDatabase created successfully at: {DB_PATH}")
-            # Test connection
-            try:
-                conn = connect_db(DB_PATH)
-                conn.close()
-                print("Database connection test successful!")
-            except Exception as e:
-                print(f"Error connecting to database: {e}")
+        db_choice = input("\nEnter your choice (1-4): ")
+
+        if db_choice == '1':
+            from scraper_utils import DB_PATH
+            from db_setup import create_direct_db
+
+            if create_direct_db(DB_PATH) and setup_database(logger, DB_PATH):
+                print(f"\nDatabase created successfully at: {DB_PATH}")
+                # Test connection
+                try:
+                    conn = connect_db(DB_PATH)
+                    conn.close()
+                    print("Database connection test successful!")
+                except Exception as e:
+                    print(f"Error connecting to database: {e}")
+            else:
+                print("\nFailed to create database.")
+
+        elif db_choice == '2':
+            from db_setup import create_torrent_db, TORRENT_DB_PATH
+            import sqlite3
+
+            if create_torrent_db(TORRENT_DB_PATH):
+                print(f"\nTorrent database created successfully at: {TORRENT_DB_PATH}")
+                try:
+                    conn = sqlite3.connect(TORRENT_DB_PATH)
+                    conn.close()
+                    print("Torrent database connection test successful!")
+                except Exception as e:
+                    print(f"Error connecting to torrent database: {e}")
+            else:
+                print("\nFailed to create torrent database.")
+
+        elif db_choice == '3':
+            from scraper_utils import DB_PATH
+            from db_setup import create_direct_db, create_torrent_db, TORRENT_DB_PATH
+            import sqlite3
+
+            direct_ok = create_direct_db(DB_PATH) and setup_database(logger, DB_PATH)
+            torrent_ok = create_torrent_db(TORRENT_DB_PATH)
+
+            if direct_ok:
+                print(f"\nDatabase created successfully at: {DB_PATH}")
+                try:
+                    conn = connect_db(DB_PATH)
+                    conn.close()
+                    print("Database connection test successful!")
+                except Exception as e:
+                    print(f"Error connecting to database: {e}")
+            else:
+                print("\nFailed to create database.")
+
+            if torrent_ok:
+                print(f"\nTorrent database created successfully at: {TORRENT_DB_PATH}")
+                try:
+                    conn = sqlite3.connect(TORRENT_DB_PATH)
+                    conn.close()
+                    print("Torrent database connection test successful!")
+                except Exception as e:
+                    print(f"Error connecting to torrent database: {e}")
+            else:
+                print("\nFailed to create torrent database.")
+
+        elif db_choice == '4':
+            return setup_database_menu()
         else:
-            print("\nFailed to create database.")
+            print("\nInvalid choice. Please try again.")
+            time.sleep(1)
+            return setup_database_menu()
 
         input("\nPress Enter to continue...")
         return setup_database_menu()
