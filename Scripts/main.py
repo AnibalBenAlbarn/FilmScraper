@@ -5,26 +5,70 @@ import subprocess
 import shutil
 import re
 import logging
+import json
 from pathlib import Path
 
 # Configuración del logging
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("../logs/main.log"),
+        logging.FileHandler(LOG_DIR / "main.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
+# Archivo de configuración para almacenar las rutas de las bases de datos
+CONFIG_FILE = Path(__file__).resolve().parent / "db_paths.json"
+
 # Rutas predeterminadas para las bases de datos
-DEFAULT_DIRECT_DB_PATH = os.path.join(os.getcwd(), "direct_dw_db.db")
-DEFAULT_TORRENT_DB_PATH = os.path.join(os.getcwd(), "torrent_dw_db.db")
+DEFAULT_DIRECT_DB_PATH = str(PROJECT_ROOT / "direct_dw_db.db")
+DEFAULT_TORRENT_DB_PATH = str(PROJECT_ROOT / "torrent_dw_db.db")
 
 # Rutas actuales (se actualizarán cuando el usuario las cambie)
 direct_db_path = DEFAULT_DIRECT_DB_PATH
 torrent_db_path = DEFAULT_TORRENT_DB_PATH
+
+
+def load_db_paths():
+    """Carga las rutas de las bases de datos desde el archivo de configuración."""
+    global direct_db_path, torrent_db_path
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            direct_db_path = data.get('direct_db_path', DEFAULT_DIRECT_DB_PATH)
+            torrent_db_path = data.get('torrent_db_path', DEFAULT_TORRENT_DB_PATH)
+            logger.debug(
+                f"Rutas cargadas desde configuración: direct={direct_db_path}, torrent={torrent_db_path}"
+            )
+        except Exception as e:
+            logger.error(f"Error al cargar archivo de configuración: {e}")
+    else:
+        logger.debug("Archivo de configuración no encontrado, usando rutas predeterminadas")
+
+
+def save_db_paths():
+    """Guarda las rutas de las bases de datos en el archivo de configuración."""
+    data = {
+        'direct_db_path': direct_db_path,
+        'torrent_db_path': torrent_db_path,
+    }
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+        logger.debug(f"Rutas de bases de datos guardadas en {CONFIG_FILE}")
+    except Exception as e:
+        logger.error(f"Error al guardar archivo de configuración: {e}")
+
+
+# Cargar rutas almacenadas al iniciar
+load_db_paths()
 
 # Scripts disponibles
 SCRIPTS = {
@@ -94,6 +138,7 @@ def print_scripts_menu():
 
 def create_database(db_path, schema):
     """Crea una base de datos SQLite con el esquema proporcionado."""
+    logger.debug(f"Preparando creación de base de datos en {db_path}")
     try:
         # Asegurarse de que el directorio existe
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
@@ -119,6 +164,7 @@ def install_databases():
     print("Esta opción creará las bases de datos SQLite necesarias para los scrapers.")
     print("Puede especificar las rutas donde desea instalar las bases de datos.")
     print()
+    logger.debug("Iniciando proceso de instalación de bases de datos")
 
     # Esquema para direct_dw_db.db
     direct_schema = """
@@ -239,6 +285,7 @@ def install_databases():
         direct_db_path = os.path.abspath(new_direct_path)
         if not direct_db_path.endswith("direct_dw_db.db"):
             direct_db_path = os.path.join(direct_db_path, "direct_dw_db.db")
+    logger.debug(f"Ruta seleccionada para direct_dw_db.db: {direct_db_path}")
 
     # Solicitar ruta para torrent_dw_db.db
     print(f"Ruta actual para torrent_dw_db.db: {torrent_db_path}")
@@ -247,18 +294,24 @@ def install_databases():
         torrent_db_path = os.path.abspath(new_torrent_path)
         if not torrent_db_path.endswith("torrent_dw_db.db"):
             torrent_db_path = os.path.join(torrent_db_path, "torrent_dw_db.db")
+    logger.debug(f"Ruta seleccionada para torrent_dw_db.db: {torrent_db_path}")
 
     # Crear las bases de datos
     print("\\nCreando bases de datos...")
+    logger.debug("Creando base de datos direct")
     direct_success = create_database(direct_db_path, direct_schema)
+    logger.debug("Creando base de datos torrent")
     torrent_success = create_database(torrent_db_path, torrent_schema)
 
     if direct_success and torrent_success:
         print("\\n¡Bases de datos creadas correctamente!")
+        save_db_paths()
         # Actualizar las rutas en los scripts
         update_db_paths_in_scripts()
+        logger.info("Instalación de bases de datos finalizada con éxito")
     else:
         print("\\nHubo errores al crear las bases de datos. Revise el archivo de log para más detalles.")
+        logger.error("Falló la creación de alguna de las bases de datos")
 
     input("\\nPresione Enter para continuar...")
 
@@ -350,6 +403,7 @@ def update_torrent_db_path_in_script(script_file):
 
 def show_config():
     """Muestra la configuración actual."""
+    logger.debug("Mostrando configuración actual")
     print_header()
     print("CONFIGURACIÓN ACTUAL")
     print("-" * 80)
@@ -382,6 +436,7 @@ def run_script(script_key):
 
     script = SCRIPTS[script_key]
     script_file = script["file"]
+    logger.debug(f"Preparando ejecución de script {script_file}")
 
     if not os.path.exists(script_file):
         print(f"Error: El archivo {script_file} no existe.")
