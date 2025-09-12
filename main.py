@@ -83,7 +83,7 @@ def setup_database_menu():
         db_choice = input("\nEnter your choice (1-4): ")
 
         if db_choice == '1':
-            from db_setup import create_direct_db
+            from Scripts.db_setup import create_direct_db
 
             if create_direct_db(scraper_utils.DB_PATH) and setup_database(logger, scraper_utils.DB_PATH):
                 print(f"\nDatabase created successfully at: {scraper_utils.DB_PATH}")
@@ -100,7 +100,7 @@ def setup_database_menu():
 
         elif db_choice == '2':
 
-            from db_setup import create_torrent_db
+            from Scripts.db_setup import create_torrent_db
             import sqlite3
 
             if create_torrent_db(scraper_utils.TORRENT_DB_PATH):
@@ -115,7 +115,7 @@ def setup_database_menu():
                 print("\nFailed to create torrent database.")
 
         elif db_choice == '3':
-            from db_setup import create_direct_db, create_torrent_db
+            from Scripts.db_setup import create_direct_db, create_torrent_db
             import sqlite3
 
             direct_ok = create_direct_db(scraper_utils.DB_PATH) and setup_database(logger, scraper_utils.DB_PATH)
