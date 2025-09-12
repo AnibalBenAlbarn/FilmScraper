@@ -34,6 +34,18 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Configuración de la base de datos
 DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
 
+# Archivo de configuración para persistir la ruta de la base de datos
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "db_config.json")
+
+# Cargar la ruta almacenada si existe
+if os.path.exists(CONFIG_FILE):
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        DB_PATH = data.get('db_path', DB_PATH)
+    except Exception:
+        pass
+
 # Configuración de caché para reducir consultas repetidas
 CACHE_ENABLED = True
 CACHE = {
@@ -43,6 +55,40 @@ CACHE = {
     'seasons': {},
     'episodes': {}
 }
+
+
+def set_db_path(path):
+    """Actualiza y persiste la ruta de la base de datos."""
+    global DB_PATH
+    DB_PATH = os.path.abspath(path)
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'db_path': DB_PATH}, f, indent=2)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Error guardando la ruta de la base de datos: {e}")
+    logging.getLogger(__name__).info(f"Ruta de base de datos establecida en: {DB_PATH}")
+
+
+def set_max_workers(value):
+    """Actualiza el número máximo de workers."""
+    global MAX_WORKERS
+    MAX_WORKERS = value
+    logging.getLogger(__name__).debug(f"MAX_WORKERS establecido en {value}")
+
+
+def set_max_retries(value):
+    """Actualiza el número máximo de reintentos."""
+    global MAX_RETRIES
+    MAX_RETRIES = value
+    logging.getLogger(__name__).debug(f"MAX_RETRIES establecido en {value}")
+
+
+def toggle_cache():
+    """Activa o desactiva el uso de caché."""
+    global CACHE_ENABLED
+    CACHE_ENABLED = not CACHE_ENABLED
+    logging.getLogger(__name__).debug(f"CACHE_ENABLED ahora es {CACHE_ENABLED}")
 
 
 # Configuración del logger
@@ -121,6 +167,7 @@ def connect_db(db_path=None):
         db_path = DB_PATH
 
     try:
+        logging.getLogger(__name__).debug(f"Conectando a la base de datos en: {db_path}")
         connection = sqlite3.connect(db_path, timeout=30)
         connection.row_factory = sqlite3.Row
 
@@ -195,7 +242,7 @@ def setup_database(logger, db_path=None):
     """Configura la base de datos, creando tablas si no existen y añadiendo columnas necesarias."""
     if db_path is None:
         db_path = DB_PATH
-
+    logger.debug(f"Iniciando configuración de la base de datos en: {db_path}")
     connection = connect_db(db_path)
     cursor = connection.cursor()
 

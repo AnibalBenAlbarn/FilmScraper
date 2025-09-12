@@ -3,8 +3,6 @@ import sys
 import time
 import argparse
 import logging
-import tkinter as tk
-from tkinter import filedialog, messagebox
 from datetime import datetime
 
 # Ensure Scripts directory is in sys.path
@@ -25,41 +23,27 @@ logger = setup_logger("main", "main.log")
 def clear_screen():
     """Clear the console screen."""
     os.system('cls' if os.name == 'nt' else 'clear')
-
+    
 
 def select_database_path():
-    """Open a file dialog to select an existing database or create a new one."""
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
+    """Prompt the user in the console to select or create a database file."""
+    from scraper_utils import DB_PATH
 
-    # Ask user if they want to create a new database or select an existing one
-    choice = messagebox.askquestion("Database Selection",
-                                    "Do you want to create a new database?\\n\\n"
-                                    "Select 'Yes' to create a new database.\\n"
-                                    "Select 'No' to choose an existing database.")
+    print("\n--- Database Path Selection ---")
+    print(f"Current database path: {DB_PATH}")
+    new_path = input("Enter new database path or press Enter to keep current: ").strip()
 
-    if choice == 'yes':
-        # Create a new database
-        file_path = filedialog.asksaveasfilename(
-            title="Create New Database",
-            filetypes=[("SQLite Database", "*.db")],
-            defaultextension=".db",
-            initialdir=PROJECT_ROOT
-        )
-    else:
-        # Select an existing database
-        file_path = filedialog.askopenfilename(
-            title="Select Existing Database",
-            filetypes=[("SQLite Database", "*.db")],
-            initialdir=PROJECT_ROOT
-        )
+    if not new_path:
+        logger.debug(f"Using existing database path: {DB_PATH}")
+        return DB_PATH
 
-    root.destroy()
+    # Ensure absolute path and .db extension
+    new_path = os.path.abspath(new_path)
+    if not new_path.endswith(".db"):
+        new_path = os.path.join(new_path, "direct_dw_db.db")
 
-    if not file_path:
-        return None
-
-    return file_path
+    logger.debug(f"Selected database path: {new_path}")
+    return new_path
 
 
 def setup_database_menu():
