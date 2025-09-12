@@ -15,13 +15,21 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
 # ver1.9
-# Importar utilidades compartidas
-from scraper_utils import (
-    setup_logger, create_driver, connect_db, login, setup_database,
-    save_progress, load_progress, clear_cache, find_series_by_title_year,
-    season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
-)
+# Import shared utilities (compatible when run as script or module)
+try:
+    from .scraper_utils import (
+        setup_logger, create_driver, connect_db, login, setup_database,
+        save_progress, load_progress, clear_cache, find_series_by_title_year,
+        season_exists, episode_exists, insert_series, insert_season,
+        insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    )
+except ImportError:  # pragma: no cover - fallback when executed directly
+    from scraper_utils import (
+        setup_logger, create_driver, connect_db, login, setup_database,
+        save_progress, load_progress, clear_cache, find_series_by_title_year,
+        season_exists, episode_exists, insert_series, insert_season,
+        insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    )
 
 # Configuración específica para este script
 SCRIPT_NAME = "direct_dw_series_scraper"

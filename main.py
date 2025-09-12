@@ -5,14 +5,9 @@ import argparse
 import logging
 from datetime import datetime
 
-# Ensure Scripts directory is in sys.path
-SCRIPT_DIR = os.path.join(os.path.dirname(__file__), "Scripts")
-if SCRIPT_DIR not in sys.path:
-    sys.path.append(SCRIPT_DIR)
-
-# Import scraper modules
-import scraper_utils
-from scraper_utils import (
+# Import scraper modules from the Scripts package
+from Scripts import scraper_utils
+from Scripts.scraper_utils import (
     setup_database,
     connect_db,
     PROJECT_ROOT,
@@ -25,7 +20,7 @@ from scraper_utils import (
 import menu_scrapers
 
 # Direct series scraper is still available via CLI arguments
-from direct_dw_series_scraper import process_all_series
+from Scripts.direct_dw_series_scraper import process_all_series
 
 # Configure logger
 logger = setup_logger("main", "main.log")
