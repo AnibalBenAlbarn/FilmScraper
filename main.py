@@ -50,38 +50,47 @@ def setup_database_menu():
     """Menu for setting up the database."""
     clear_screen()
     print("\n===== DATABASE SETUP =====")
-    print("1. Setup database (create or select)")
-    print("2. Run database script")
-    print("3. Back to main menu")
+    print("1. Create database")
+    print("2. Set database path")
+    print("3. Run database script")
+    print("4. Back to main menu")
 
-    choice = input("\nEnter your choice (1-3): ")
+    choice = input("\nEnter your choice (1-4): ")
 
     if choice == '1':
-        db_path = select_database_path()
-        if db_path:
-            # Update the global DB_PATH in scraper_utils
-            from scraper_utils import DB_PATH, set_db_path
-            set_db_path(db_path)
+        # Create the database with the default structure
+        from scraper_utils import DB_PATH
+        from db_setup import create_direct_db
 
-            # Setup the database
-            if setup_database(logger, db_path):
-                print(f"\nDatabase setup successfully at: {db_path}")
-                # Test connection
-                try:
-                    conn = connect_db(db_path)
-                    conn.close()
-                    print("Database connection test successful!")
-                except Exception as e:
-                    print(f"Error connecting to database: {e}")
-            else:
-                print("\nFailed to setup database.")
+        if create_direct_db(DB_PATH) and setup_database(logger, DB_PATH):
+            print(f"\nDatabase created successfully at: {DB_PATH}")
+            # Test connection
+            try:
+                conn = connect_db(DB_PATH)
+                conn.close()
+                print("Database connection test successful!")
+            except Exception as e:
+                print(f"Error connecting to database: {e}")
         else:
-            print("\nDatabase setup cancelled.")
+            print("\nFailed to create database.")
 
         input("\nPress Enter to continue...")
         return setup_database_menu()
 
     elif choice == '2':
+        # Set a new database path
+        db_path = select_database_path()
+        if db_path:
+            from scraper_utils import set_db_path
+            set_db_path(db_path)
+            print(f"\nDatabase path set to: {db_path}")
+        else:
+            print("\nDatabase path not changed.")
+
+        input("\nPress Enter to continue...")
+        return setup_database_menu()
+
+    elif choice == '3':
         # Run database script
         script_path = input("\nEnter the path to the SQL script file: ")
         if os.path.exists(script_path):
@@ -100,7 +109,7 @@ def setup_database_menu():
         input("\nPress Enter to continue...")
         return setup_database_menu()
 
-    elif choice == '3':
+    elif choice == '4':
         return
 
     else:

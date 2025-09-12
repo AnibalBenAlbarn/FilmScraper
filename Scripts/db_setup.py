@@ -2,7 +2,8 @@ import os
 import sqlite3
 import logging
 
-from main import PROJECT_ROOT
+# Determinar la ruta raíz del proyecto sin depender de `main`
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Configuración del logging
 logging.basicConfig(
