@@ -30,6 +30,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Database setup
+
+When running `python main.py` without command-line options, an interactive menu is shown. Under **Database Setup** you can create the direct download and torrent databases individually or both at once. The menu also allows changing the path of the direct database and running custom SQL scripts.
+
 ## Repository structure
 
 - `main.py` – Entry point that displays the application menu or accepts command line arguments.
