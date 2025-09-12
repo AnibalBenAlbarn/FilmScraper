@@ -36,7 +36,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://dontorrent.schule/pelicula/"
+# Base URL del sitio Dontorrent para películas
+BASE_URL = "https://dontorrent.lighting/pelicula/"
 
 # Path to the database
 db_path = r'D:/Workplace/HdfullScrappers/Scripts/torrent_dw_db.db'

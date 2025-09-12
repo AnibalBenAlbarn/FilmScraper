@@ -37,6 +37,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# URL base del sitio Dontorrent para series
+BASE_URL = "https://dontorrent.lighting/serie/"
+
 # Path to the database
 db_path = r'D:/Workplace/HdfullScrappers/Scripts/torrent_dw_db.db'
 
@@ -424,7 +427,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
 
     try:
         while True:
-            series_url = f"https://dontorrent.schule/serie/{current_id}/{current_id}/"
+            series_url = f"{BASE_URL}{current_id}/{current_id}/"
             logger.info(f"Extrayendo: {series_url}")
 
             success = False
