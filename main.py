@@ -66,6 +66,7 @@ def setup_database_menu():
     clear_screen()
     print("\n===== DATABASE SETUP =====")
     print("1. Create database(s)")
+
     print("2. Set database path(s)")
     print("3. Run database script")
     print("4. Back to main menu")
@@ -91,6 +92,7 @@ def setup_database_menu():
                 # Test connection
                 try:
                     conn = connect_db(scraper_utils.DB_PATH)
+
                     conn.close()
                     print("Database connection test successful!")
                 except Exception as e:
@@ -99,6 +101,7 @@ def setup_database_menu():
                 print("\nFailed to create database.")
 
         elif db_choice == '2':
+
             from db_setup import create_torrent_db
             import sqlite3
 
@@ -132,9 +135,11 @@ def setup_database_menu():
                 print("\nFailed to create database.")
 
             if torrent_ok:
+
                 print(f"\nTorrent database created successfully at: {scraper_utils.TORRENT_DB_PATH}")
                 try:
                     conn = sqlite3.connect(scraper_utils.TORRENT_DB_PATH)
+
                     conn.close()
                     print("Torrent database connection test successful!")
                 except Exception as e:
