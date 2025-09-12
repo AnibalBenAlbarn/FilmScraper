@@ -16,12 +16,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from bs4 import BeautifulSoup
 
-# Importar PROJECT_ROOT desde main.py
-try:
-    from main import PROJECT_ROOT
-except ImportError:
-    # Si no se puede importar, usar el directorio actual
-    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Obtener la ruta del proyecto desde las utilidades compartidas
+from scraper_utils import PROJECT_ROOT
 
 # Configuración del logger para evitar duplicación
 logger = logging.getLogger("films_scraper")
@@ -694,8 +690,8 @@ def extract_all_movies():
             "No se pudo determinar el número total de páginas. Se procesarán hasta encontrar una página vacía.")
 
     # Cargar el progreso guardado
-    page_number, last_movie_index = load_progress()
-    start_index = 0 if last_movie_index is None else last_movie_index + 1
+    page_number, _ = load_progress()
+    start_index = 0
 
     try:
         # Crear un pool de workers
@@ -721,9 +717,8 @@ def extract_all_movies():
                     movie_queue.put((index, url))
                     logger.debug(f"Añadida película {index} a la cola: {url}")
 
-                # Guardar el progreso después de procesar cada página
-                last_movie_index = movie_urls[-1][0] if movie_urls else -1
-                save_progress(page_number, last_movie_index)
+                # Guardar el progreso apuntando a la siguiente página
+                save_progress(page_number + 1, -1)
 
                 # Si conocemos el total de páginas y hemos llegado a la última, terminar
                 if total_pages and page_number >= total_pages:
@@ -771,9 +766,9 @@ if __name__ == "__main__":
         logger.critical(f"Error crítico en el scraper: {e}")
         # Intentar guardar el progreso antes de salir
         try:
-            page_number, last_movie_index = load_progress()
-            save_progress(page_number, last_movie_index)
-        except:
+            page_number, _ = load_progress()
+            save_progress(page_number, -1)
+        except Exception:
             pass
     finally:
         logger.info("Scraper finalizado.")

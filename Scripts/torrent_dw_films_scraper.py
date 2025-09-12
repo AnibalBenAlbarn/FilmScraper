@@ -10,13 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import urllib3
+
 #ver:1.05
-# Asumiendo que PROJECT_ROOT está definido en main.py
-# Si no está disponible, puedes definirlo aquí
-try:
-    from main import PROJECT_ROOT
-except ImportError:
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Obtener la ruta del proyecto desde las utilidades compartidas
+from scraper_utils import PROJECT_ROOT
 
 # Asegurarse de que existe el directorio de progreso
 progress_dir = os.path.join(PROJECT_ROOT, "progress")
@@ -333,6 +330,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     progress_data = load_progress()
     current_id = progress_data.get("current_id", start_id)
     total_saved = progress_data.get("total_saved", 0)
+    next_id = current_id
 
     logger.info(f"Iniciando scraping desde ID: {current_id}, películas guardadas anteriormente: {total_saved}")
 
@@ -361,11 +359,15 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error(
                         f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
+                    next_id = movie_id + 1
                     break
 
-            # Guardar progreso cada 10 películas o cuando hay un error
+            # Calcular siguiente ID
+            next_id = movie_id + 1
+
+            # Guardar progreso cada película o cuando hay un error
             if movie_id % 1 == 0 or movie_data is None:
-                save_progress(movie_id + 1, total_saved)
+                save_progress(next_id, total_saved)
 
             # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
             sleep_time = 1 + (movie_id % 2)
@@ -377,7 +379,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
         logger.critical(f"Error crítico: {str(e)}")
     finally:
         # Guardar progreso final
-        save_progress(current_id, total_saved)
+        save_progress(next_id, total_saved)
         logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} películas en la base de datos.")
 
 
