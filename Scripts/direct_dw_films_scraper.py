@@ -78,8 +78,13 @@ if not os.path.exists(progress_dir):
 # Archivo para guardar el progreso
 progress_file = os.path.join(progress_dir, "movie_progress.json")
 
-# Ruta de la base de datos
-db_path = r'D:/Workplace/HdfullScrappers/Scripts/direct_dw_db.db'
+# Ruta de la base de datos (usando configuración compartida)
+try:  # pragma: no cover - compatible al ejecutarse como script o módulo
+    from .scraper_utils import DB_PATH
+except ImportError:  # pragma: no cover
+    from scraper_utils import DB_PATH
+
+db_path = DB_PATH
 
 # Contador de reinicios del script
 restart_count = 0

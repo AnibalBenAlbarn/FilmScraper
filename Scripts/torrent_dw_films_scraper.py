@@ -39,8 +39,13 @@ logger = logging.getLogger(__name__)
 # Base URL del sitio Dontorrent para películas
 BASE_URL = "https://dontorrent.lighting/pelicula/"
 
-# Path to the database
-db_path = r'D:/Workplace/HdfullScrappers/Scripts/torrent_dw_db.db'
+# Path to the database (shared configuration)
+try:  # pragma: no cover - compatible con ejecución como script o módulo
+    from .scraper_utils import TORRENT_DB_PATH
+except ImportError:  # pragma: no cover
+    from scraper_utils import TORRENT_DB_PATH
+
+db_path = TORRENT_DB_PATH
 
 # Headers (para evitar ser bloqueado)
 headers = {
