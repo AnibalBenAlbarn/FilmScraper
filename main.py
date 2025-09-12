@@ -49,12 +49,12 @@ def select_database_path():
 def setup_database_menu():
     """Menu for setting up the database."""
     clear_screen()
-    print("\\n===== DATABASE SETUP =====")
+    print("\n===== DATABASE SETUP =====")
     print("1. Setup database (create or select)")
     print("2. Run database script")
     print("3. Back to main menu")
 
-    choice = input("\\nEnter your choice (1-3): ")
+    choice = input("\nEnter your choice (1-3): ")
 
     if choice == '1':
         db_path = select_database_path()
@@ -65,7 +65,7 @@ def setup_database_menu():
 
             # Setup the database
             if setup_database(logger, db_path):
-                print(f"\\nDatabase setup successfully at: {db_path}")
+                print(f"\nDatabase setup successfully at: {db_path}")
                 # Test connection
                 try:
                     conn = connect_db(db_path)
@@ -74,37 +74,37 @@ def setup_database_menu():
                 except Exception as e:
                     print(f"Error connecting to database: {e}")
             else:
-                print("\\nFailed to setup database.")
+                print("\nFailed to setup database.")
         else:
-            print("\\nDatabase setup cancelled.")
+            print("\nDatabase setup cancelled.")
 
-        input("\\nPress Enter to continue...")
+        input("\nPress Enter to continue...")
         return setup_database_menu()
 
     elif choice == '2':
         # Run database script
-        script_path = input("\\nEnter the path to the SQL script file: ")
+        script_path = input("\nEnter the path to the SQL script file: ")
         if os.path.exists(script_path):
             from scraper_utils import DB_PATH, execute_sql_script
-            db_path = input("\\nEnter the path to the database (leave empty for default): ")
+            db_path = input("\nEnter the path to the database (leave empty for default): ")
             if not db_path:
                 db_path = DB_PATH
 
             if execute_sql_script(script_path, db_path, logger):
-                print("\\nScript executed successfully!")
+                print("\nScript executed successfully!")
             else:
-                print("\\nFailed to execute script.")
+                print("\nFailed to execute script.")
         else:
-            print("\\nScript file not found.")
+            print("\nScript file not found.")
 
-        input("\\nPress Enter to continue...")
+        input("\nPress Enter to continue...")
         return setup_database_menu()
 
     elif choice == '3':
         return
 
     else:
-        print("\\nInvalid choice. Please try again.")
+        print("\nInvalid choice. Please try again.")
         time.sleep(1)
         return setup_database_menu()
 
@@ -112,7 +112,7 @@ def setup_database_menu():
 def series_scraper_menu():
     """Menu for series scraper options."""
     clear_screen()
-    print("\\n===== SERIES SCRAPER =====")
+    print("\n===== SERIES SCRAPER =====")
     print("1. Start scraping from page 1")
     print("2. Start scraping from specific page")
     print("3. Scrape specific number of pages")
@@ -121,22 +121,22 @@ def series_scraper_menu():
     print("6. Update recently updated episodes")
     print("7. Back to main menu")
 
-    choice = input("\\nEnter your choice (1-7): ")
+    choice = input("\nEnter your choice (1-7): ")
 
     if choice == '1':
         # Start from page 1
         process_all_series(start_page=1)
-        input("\\nScraping completed. Press Enter to continue...")
+        input("\nScraping completed. Press Enter to continue...")
         return series_scraper_menu()
 
     elif choice == '2':
         # Start from specific page
         try:
-            start_page = int(input("\\nEnter starting page number: "))
+            start_page = int(input("\nEnter starting page number: "))
             process_all_series(start_page=start_page)
-            input("\\nScraping completed. Press Enter to continue...")
+            input("\nScraping completed. Press Enter to continue...")
         except ValueError:
-            print("\\nInvalid page number. Please enter a number.")
+            print("\nInvalid page number. Please enter a number.")
             time.sleep(1)
 
         return series_scraper_menu()
@@ -144,42 +144,42 @@ def series_scraper_menu():
     elif choice == '3':
         # Scrape specific number of pages
         try:
-            start_page = int(input("\\nEnter starting page number: "))
+            start_page = int(input("\nEnter starting page number: "))
             max_pages = int(input("Enter maximum number of pages to scrape: "))
             process_all_series(start_page=start_page, max_pages=max_pages)
-            input("\\nScraping completed. Press Enter to continue...")
+            input("\nScraping completed. Press Enter to continue...")
         except ValueError:
-            print("\\nInvalid input. Please enter numbers.")
+            print("\nInvalid input. Please enter numbers.")
             time.sleep(1)
 
         return series_scraper_menu()
 
     elif choice == '4':
         # Reset progress and start from page 1
-        confirm = input("\\nThis will reset all progress. Are you sure? (y/n): ")
+        confirm = input("\nThis will reset all progress. Are you sure? (y/n): ")
         if confirm.lower() == 'y':
             process_all_series(start_page=1, reset_progress=True)
-            input("\\nScraping completed. Press Enter to continue...")
+            input("\nScraping completed. Press Enter to continue...")
 
         return series_scraper_menu()
 
     elif choice == '5':
         # Update latest episodes
         process_premiere_episodes()
-        input("\\nUpdate completed. Press Enter to continue...")
+        input("\nUpdate completed. Press Enter to continue...")
         return series_scraper_menu()
 
     elif choice == '6':
         # Update recently updated episodes
         process_updated_episodes()
-        input("\\nUpdate completed. Press Enter to continue...")
+        input("\nUpdate completed. Press Enter to continue...")
         return series_scraper_menu()
 
     elif choice == '7':
         return
 
     else:
-        print("\\nInvalid choice. Please try again.")
+        print("\nInvalid choice. Please try again.")
         time.sleep(1)
         return series_scraper_menu()
 
@@ -187,90 +187,90 @@ def series_scraper_menu():
 def movie_scraper_menu():
     """Menu for movie scraper options."""
     clear_screen()
-    print("\\n===== MOVIE SCRAPER =====")
+    print("\n===== MOVIE SCRAPER =====")
     print("1. Start movie scraping from page 1")
     print("2. Start movie scraping from specific page")
     print("3. Scrape specific number of movie pages")
     print("4. Reset movie progress and start from page 1")
     print("5. Back to main menu")
 
-    choice = input("\\nEnter your choice (1-5): ")
+    choice = input("\nEnter your choice (1-5): ")
 
     if choice == '1':
-        print("\\nMovie scraping not implemented yet.")
+        print("\nMovie scraping not implemented yet.")
     elif choice == '2':
-        print("\\nMovie scraping not implemented yet.")
+        print("\nMovie scraping not implemented yet.")
     elif choice == '3':
-        print("\\nMovie scraping not implemented yet.")
+        print("\nMovie scraping not implemented yet.")
     elif choice == '4':
-        print("\\nMovie scraping not implemented yet.")
+        print("\nMovie scraping not implemented yet.")
     elif choice == '5':
         return
     else:
-        print("\\nInvalid choice. Please try again.")
+        print("\nInvalid choice. Please try again.")
         time.sleep(1)
 
-    input("\\nPress Enter to continue...")
+    input("\nPress Enter to continue...")
     return movie_scraper_menu()
 
 
 def settings_menu():
     """Menu for settings."""
     clear_screen()
-    print("\\n===== SETTINGS =====")
+    print("\n===== SETTINGS =====")
     print("1. Change maximum workers")
     print("2. Change retry settings")
     print("3. Toggle cache")
     print("4. Back to main menu")
 
-    choice = input("\\nEnter your choice (1-4): ")
+    choice = input("\nEnter your choice (1-4): ")
 
     if choice == '1':
         try:
             from scraper_utils import MAX_WORKERS, set_max_workers
             current = MAX_WORKERS
-            print(f"\\nCurrent maximum workers: {current}")
+            print(f"\nCurrent maximum workers: {current}")
             new_value = int(input("Enter new maximum workers (2-8): "))
             if 2 <= new_value <= 8:
                 set_max_workers(new_value)
-                print(f"\\nMaximum workers changed to {new_value}")
+                print(f"\nMaximum workers changed to {new_value}")
             else:
-                print("\\nInvalid value. Must be between 2 and 8.")
+                print("\nInvalid value. Must be between 2 and 8.")
         except ValueError:
-            print("\\nInvalid input. Please enter a number.")
+            print("\nInvalid input. Please enter a number.")
 
     elif choice == '2':
         try:
             from scraper_utils import MAX_RETRIES, set_max_retries
             current = MAX_RETRIES
-            print(f"\\nCurrent maximum retries: {current}")
+            print(f"\nCurrent maximum retries: {current}")
             new_value = int(input("Enter new maximum retries (1-10): "))
             if 1 <= new_value <= 10:
                 set_max_retries(new_value)
-                print(f"\\nMaximum retries changed to {new_value}")
+                print(f"\nMaximum retries changed to {new_value}")
             else:
-                print("\\nInvalid value. Must be between 1 and 10.")
+                print("\nInvalid value. Must be between 1 and 10.")
         except ValueError:
-            print("\\nInvalid input. Please enter a number.")
+            print("\nInvalid input. Please enter a number.")
 
     elif choice == '3':
         from scraper_utils import CACHE_ENABLED, toggle_cache
         current = "Enabled" if CACHE_ENABLED else "Disabled"
-        print(f"\\nCache is currently: {current}")
+        print(f"\nCache is currently: {current}")
         new_value = input("Toggle cache (y/n): ")
         if new_value.lower() == 'y':
             toggle_cache()
             new_status = "Enabled" if CACHE_ENABLED else "Disabled"
-            print(f"\\nCache is now: {new_status}")
+            print(f"\nCache is now: {new_status}")
 
     elif choice == '4':
         return
 
     else:
-        print("\\nInvalid choice. Please try again.")
+        print("\nInvalid choice. Please try again.")
         time.sleep(1)
 
-    input("\\nPress Enter to continue...")
+    input("\nPress Enter to continue...")
     return settings_menu()
 
 
@@ -278,15 +278,15 @@ def main_menu():
     """Main menu of the application."""
     while True:
         clear_screen()
-        print("\\n===== HDFULL SCRAPER =====")
+        print("\n===== HDFULL SCRAPER =====")
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("\\n1. Database Setup")
+        print("1. Database Setup")
         print("2. Series Scraper")
         print("3. Movie Scraper")
         print("4. Settings")
         print("5. Exit")
 
-        choice = input("\\nEnter your choice (1-5): ")
+        choice = input("\nEnter your choice (1-5): ")
 
         if choice == '1':
             setup_database_menu()
@@ -297,10 +297,10 @@ def main_menu():
         elif choice == '4':
             settings_menu()
         elif choice == '5':
-            print("\\nExiting program. Goodbye!")
+            print("\nExiting program. Goodbye!")
             sys.exit(0)
         else:
-            print("\\nInvalid choice. Please try again.")
+            print("\nInvalid choice. Please try again.")
             time.sleep(1)
 
 

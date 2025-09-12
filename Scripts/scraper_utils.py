@@ -275,18 +275,30 @@ def setup_database(logger, db_path=None):
         cursor.execute("PRAGMA table_info(media_downloads)")
         columns = {row['name'] for row in cursor.fetchall()}
 
-        if 'created_at' not in columns:
-            cursor.execute("ALTER TABLE media_downloads ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        if columns:
+            if 'created_at' not in columns:
+                cursor.execute(
+                    "ALTER TABLE media_downloads ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
 
-        if 'updated_at' not in columns:
-            cursor.execute("ALTER TABLE media_downloads ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            if 'updated_at' not in columns:
+                cursor.execute(
+                    "ALTER TABLE media_downloads ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
+        else:
+            logger.warning("Tabla media_downloads no existe; omitiendo cambios de columnas")
 
         # Verificar si la columna created_at existe en links_files_download
         cursor.execute("PRAGMA table_info(links_files_download)")
         columns = {row['name'] for row in cursor.fetchall()}
 
-        if 'created_at' not in columns:
-            cursor.execute("ALTER TABLE links_files_download ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        if columns:
+            if 'created_at' not in columns:
+                cursor.execute(
+                    "ALTER TABLE links_files_download ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
+        else:
+            logger.warning("Tabla links_files_download no existe; omitiendo cambios de columnas")
 
         # Crear índices para mejorar el rendimiento de las consultas
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_media_downloads_title ON media_downloads(title, type)")
