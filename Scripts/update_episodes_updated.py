@@ -16,10 +16,8 @@ from scraper_utils import (
     save_progress, load_progress, extract_links,
     insert_links_batch, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES
+    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
 )
-
-from main import PROJECT_ROOT
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_updated"
