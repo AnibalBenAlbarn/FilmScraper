@@ -2,8 +2,22 @@ import os
 import sqlite3
 import logging
 
-# Determinar la ruta raíz del proyecto sin depender de `main`
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Obtener rutas compartidas desde scraper_utils para mantener consistencia
+try:  # pragma: no cover - fallback cuando se ejecuta como script
+    from .scraper_utils import (
+        DB_PATH as DIRECT_DB_PATH,
+        TORRENT_DB_PATH,
+        PROJECT_ROOT,
+    )
+except ImportError:  # pragma: no cover
+    from scraper_utils import (
+        DB_PATH as DIRECT_DB_PATH,
+        TORRENT_DB_PATH,
+        PROJECT_ROOT,
+    )
+
+# Asegurar que el directorio de logs existe
+os.makedirs(os.path.join(PROJECT_ROOT, "logs"), exist_ok=True)
 
 # Configuración del logging
 logging.basicConfig(
@@ -11,14 +25,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(PROJECT_ROOT, "logs", "db_setup.log")),
-        logging.StreamHandler()
-    ]
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
-
-# Rutas de las bases de datos
-DIRECT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
-TORRENT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_db.db")
 
 
 def create_direct_db(db_path=None):
