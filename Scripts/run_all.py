@@ -21,37 +21,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Scripts a ejecutar en orden
-SCRIPTS = [
+# Scripts directos (actualizaciones)
+DIRECT_SCRIPTS = [
     {
         "name": "Películas de Estreno",
         "file": os.path.join(PROJECT_ROOT, "Scripts", "update_movies_premiere.py"),
-        "description": "Extrae información de películas de estreno"
+        "description": "Extrae información de películas de estreno",
     },
     {
         "name": "Películas Actualizadas",
         "file": os.path.join(PROJECT_ROOT, "Scripts", "update_movies_updated.py"),
-        "description": "Extrae información de películas actualizadas"
+        "description": "Extrae información de películas actualizadas",
     },
     {
         "name": "Episodios de Estreno",
         "file": os.path.join(PROJECT_ROOT, "Scripts", "update_episodes_premiere.py"),
-        "description": "Extrae información de episodios de estreno"
+        "description": "Extrae información de episodios de estreno",
     },
     {
         "name": "Episodios Actualizados",
         "file": os.path.join(PROJECT_ROOT, "Scripts", "update_episodes_updated.py"),
-        "description": "Extrae información de episodios actualizados"
-    }
+        "description": "Extrae información de episodios actualizados",
+    },
+]
+
+# Scripts torrent (se actualizan reejecutando)
+TORRENT_SCRIPTS = [
+    {
+        "name": "Torrent Series",
+        "file": os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_series_scraper.py"),
+        "description": "Extrae información de series torrent",
+    },
+    {
+        "name": "Torrent Películas",
+        "file": os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_films_scraper.py"),
+        "description": "Extrae información de películas torrent",
+    },
 ]
 
 
-def run_all_scripts(db_path=None, max_pages=None, max_workers=None):
-    """Ejecuta todos los scripts optimizados en secuencia."""
+def run_all_scripts(scraper_type="direct", db_path=None, max_pages=None, max_workers=None):
+    """Ejecuta todos los scripts en secuencia según el tipo seleccionado."""
     start_time = datetime.now()
-    logger.info(f"Iniciando ejecución de todos los scripts: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(
+        f"Iniciando ejecución de scripts ({scraper_type}): {start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
-    for script in SCRIPTS:
+    scripts = DIRECT_SCRIPTS if scraper_type == "direct" else TORRENT_SCRIPTS
+
+    for script in scripts:
         script_name = script["name"]
         script_file = script["file"]
 
@@ -66,15 +84,17 @@ def run_all_scripts(db_path=None, max_pages=None, max_workers=None):
 
         cmd = [sys.executable, script_file]
 
-        if db_path:
-            cmd.extend(["--db-path", db_path])
+        # Los scripts de tipo torrent manejan su propia configuración
+        if scraper_type == "direct":
+            if db_path:
+                cmd.extend(["--db-path", db_path])
 
-        if "premiere" in script_file or "updated" in script_file:
-            if "movies" in script_file and max_pages:
-                cmd.extend(["--max-pages", str(max_pages)])
+            if "premiere" in script_file or "updated" in script_file:
+                if "movies" in script_file and max_pages:
+                    cmd.extend(["--max-pages", str(max_pages)])
 
-        if max_workers:
-            cmd.extend(["--max-workers", str(max_workers)])
+            if max_workers:
+                cmd.extend(["--max-workers", str(max_workers)])
 
         try:
             subprocess.run(cmd, check=True)
@@ -98,11 +118,13 @@ def run_all_scripts(db_path=None, max_pages=None, max_workers=None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Ejecutar todos los scripts optimizados en secuencia')
+    parser = argparse.ArgumentParser(description='Ejecutar varios scrapers en secuencia')
+    parser.add_argument('--scraper', choices=['direct', 'torrent'], default='direct',
+                        help='Tipo de scrapers a ejecutar')
     parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')
     parser.add_argument('--max-pages', type=int, help='Número máximo de páginas a procesar para películas')
     parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')
 
     args = parser.parse_args()
 
-    run_all_scripts(args.db_path, args.max_pages, args.max_workers)
+    run_all_scripts(args.scraper, args.db_path, args.max_pages, args.max_workers)
