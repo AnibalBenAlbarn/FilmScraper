@@ -43,3 +43,17 @@ When running `python main.py` without command-line options, an interactive menu 
 - `run.bat` – Windows helper to bootstrap the environment and execute `main.py`.
 
 Logs and the virtual environment are ignored by git.
+
+## Running scrapers in batch
+
+The helper script `Scripts/run_all.py` executes multiple scrapers sequentially. The
+`--scraper` option selects between the direct-download update scripts and the
+torrent scrapers:
+
+```bash
+python Scripts/run_all.py --scraper direct
+python Scripts/run_all.py --scraper torrent
+```
+
+Arguments like `--db-path`, `--max-pages` and `--max-workers` are only applicable
+to the direct scrapers.
