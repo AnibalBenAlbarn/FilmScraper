@@ -10,6 +10,7 @@ import json
 from requests.exceptions import RequestException, HTTPError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import urllib3
 #ver:1.05
 # Asumiendo que PROJECT_ROOT está definido en main.py
 # Si no está disponible, puedes definirlo aquí
@@ -51,8 +52,10 @@ headers = {
 
 # Create a session with retry mechanism
 session = requests.Session()
+session.verify = False  # Disable SSL verification for self-signed certificates
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('https://', HTTPAdapter(max_retries=retries))
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def initialize_database():

@@ -20,9 +20,12 @@ from scraper_utils import (
     set_db_path,
     set_torrent_db_path,
 )
+
+# Menu for running the different scrapers
+import menu_scrapers
+
+# Direct series scraper is still available via CLI arguments
 from direct_dw_series_scraper import process_all_series
-from update_episodes_premiere import process_premiere_episodes
-from update_episodes_updated import process_updated_episodes
 
 # Configure logger
 logger = setup_logger("main", "main.log")
@@ -221,111 +224,6 @@ def setup_database_menu():
         return setup_database_menu()
 
 
-def series_scraper_menu():
-    """Menu for series scraper options."""
-    clear_screen()
-    print("\n===== SERIES SCRAPER =====")
-    print("1. Start scraping from page 1")
-    print("2. Start scraping from specific page")
-    print("3. Scrape specific number of pages")
-    print("4. Reset progress and start from page 1")
-    print("5. Update latest episodes")
-    print("6. Update recently updated episodes")
-    print("7. Back to main menu")
-
-    choice = input("\nEnter your choice (1-7): ")
-
-    if choice == '1':
-        # Start from page 1
-        process_all_series(start_page=1)
-        input("\nScraping completed. Press Enter to continue...")
-        return series_scraper_menu()
-
-    elif choice == '2':
-        # Start from specific page
-        try:
-            start_page = int(input("\nEnter starting page number: "))
-            process_all_series(start_page=start_page)
-            input("\nScraping completed. Press Enter to continue...")
-        except ValueError:
-            print("\nInvalid page number. Please enter a number.")
-            time.sleep(1)
-
-        return series_scraper_menu()
-
-    elif choice == '3':
-        # Scrape specific number of pages
-        try:
-            start_page = int(input("\nEnter starting page number: "))
-            max_pages = int(input("Enter maximum number of pages to scrape: "))
-            process_all_series(start_page=start_page, max_pages=max_pages)
-            input("\nScraping completed. Press Enter to continue...")
-        except ValueError:
-            print("\nInvalid input. Please enter numbers.")
-            time.sleep(1)
-
-        return series_scraper_menu()
-
-    elif choice == '4':
-        # Reset progress and start from page 1
-        confirm = input("\nThis will reset all progress. Are you sure? (y/n): ")
-        if confirm.lower() == 'y':
-            process_all_series(start_page=1, reset_progress=True)
-            input("\nScraping completed. Press Enter to continue...")
-
-        return series_scraper_menu()
-
-    elif choice == '5':
-        # Update latest episodes
-        process_premiere_episodes()
-        input("\nUpdate completed. Press Enter to continue...")
-        return series_scraper_menu()
-
-    elif choice == '6':
-        # Update recently updated episodes
-        process_updated_episodes()
-        input("\nUpdate completed. Press Enter to continue...")
-        return series_scraper_menu()
-
-    elif choice == '7':
-        return
-
-    else:
-        print("\nInvalid choice. Please try again.")
-        time.sleep(1)
-        return series_scraper_menu()
-
-
-def movie_scraper_menu():
-    """Menu for movie scraper options."""
-    clear_screen()
-    print("\n===== MOVIE SCRAPER =====")
-    print("1. Start movie scraping from page 1")
-    print("2. Start movie scraping from specific page")
-    print("3. Scrape specific number of movie pages")
-    print("4. Reset movie progress and start from page 1")
-    print("5. Back to main menu")
-
-    choice = input("\nEnter your choice (1-5): ")
-
-    if choice == '1':
-        print("\nMovie scraping not implemented yet.")
-    elif choice == '2':
-        print("\nMovie scraping not implemented yet.")
-    elif choice == '3':
-        print("\nMovie scraping not implemented yet.")
-    elif choice == '4':
-        print("\nMovie scraping not implemented yet.")
-    elif choice == '5':
-        return
-    else:
-        print("\nInvalid choice. Please try again.")
-        time.sleep(1)
-
-    input("\nPress Enter to continue...")
-    return movie_scraper_menu()
-
-
 def settings_menu():
     """Menu for settings."""
     clear_screen()
@@ -393,22 +291,19 @@ def main_menu():
         print("\n===== HDFULL SCRAPER =====")
         print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("1. Database Setup")
-        print("2. Series Scraper")
-        print("3. Movie Scraper")
-        print("4. Settings")
-        print("5. Exit")
+        print("2. Run Scrapers")
+        print("3. Settings")
+        print("4. Exit")
 
-        choice = input("\nEnter your choice (1-5): ")
+        choice = input("\nEnter your choice (1-4): ")
 
         if choice == '1':
             setup_database_menu()
         elif choice == '2':
-            series_scraper_menu()
+            menu_scrapers.main()
         elif choice == '3':
-            movie_scraper_menu()
-        elif choice == '4':
             settings_menu()
-        elif choice == '5':
+        elif choice == '4':
             print("\nExiting program. Goodbye!")
             sys.exit(0)
         else:
@@ -443,3 +338,4 @@ if __name__ == "__main__":
 
     # If no command line arguments, show the interactive menu
     main_menu()
+
