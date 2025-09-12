@@ -11,7 +11,15 @@ if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
 # Import scraper modules
-from scraper_utils import setup_database, connect_db, PROJECT_ROOT, setup_logger
+import scraper_utils
+from scraper_utils import (
+    setup_database,
+    connect_db,
+    PROJECT_ROOT,
+    setup_logger,
+    set_db_path,
+    set_torrent_db_path,
+)
 from direct_dw_series_scraper import process_all_series
 from update_episodes_premiere import process_premiere_episodes
 from update_episodes_updated import process_updated_episodes
@@ -25,25 +33,32 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
     
 
-def select_database_path():
-    """Prompt the user in the console to select or create a database file."""
-    from scraper_utils import DB_PATH
+def select_database_path(current_path, default_name):
+    """Prompt the user to select or create a database file."""
 
     print("\n--- Database Path Selection ---")
-    print(f"Current database path: {DB_PATH}")
+    print(f"Current database path: {current_path}")
     new_path = input("Enter new database path or press Enter to keep current: ").strip()
 
     if not new_path:
-        logger.debug(f"Using existing database path: {DB_PATH}")
-        return DB_PATH
+        logger.debug(f"Using existing database path: {current_path}")
+        return current_path
 
     # Ensure absolute path and .db extension
     new_path = os.path.abspath(new_path)
     if not new_path.endswith(".db"):
-        new_path = os.path.join(new_path, "direct_dw_db.db")
+        new_path = os.path.join(new_path, default_name)
 
     logger.debug(f"Selected database path: {new_path}")
     return new_path
+
+
+def select_direct_db_path():
+    return select_database_path(scraper_utils.DB_PATH, "direct_dw_db.db")
+
+
+def select_torrent_db_path():
+    return select_database_path(scraper_utils.TORRENT_DB_PATH, "torrent_dw_db.db")
 
 
 def setup_database_menu():
@@ -51,7 +66,8 @@ def setup_database_menu():
     clear_screen()
     print("\n===== DATABASE SETUP =====")
     print("1. Create database(s)")
-    print("2. Set database path")
+
+    print("2. Set database path(s)")
     print("3. Run database script")
     print("4. Back to main menu")
 
@@ -69,14 +85,14 @@ def setup_database_menu():
         db_choice = input("\nEnter your choice (1-4): ")
 
         if db_choice == '1':
-            from scraper_utils import DB_PATH
             from db_setup import create_direct_db
 
-            if create_direct_db(DB_PATH) and setup_database(logger, DB_PATH):
-                print(f"\nDatabase created successfully at: {DB_PATH}")
+            if create_direct_db(scraper_utils.DB_PATH) and setup_database(logger, scraper_utils.DB_PATH):
+                print(f"\nDatabase created successfully at: {scraper_utils.DB_PATH}")
                 # Test connection
                 try:
-                    conn = connect_db(DB_PATH)
+                    conn = connect_db(scraper_utils.DB_PATH)
+
                     conn.close()
                     print("Database connection test successful!")
                 except Exception as e:
@@ -85,13 +101,14 @@ def setup_database_menu():
                 print("\nFailed to create database.")
 
         elif db_choice == '2':
-            from db_setup import create_torrent_db, TORRENT_DB_PATH
+
+            from db_setup import create_torrent_db
             import sqlite3
 
-            if create_torrent_db(TORRENT_DB_PATH):
-                print(f"\nTorrent database created successfully at: {TORRENT_DB_PATH}")
+            if create_torrent_db(scraper_utils.TORRENT_DB_PATH):
+                print(f"\nTorrent database created successfully at: {scraper_utils.TORRENT_DB_PATH}")
                 try:
-                    conn = sqlite3.connect(TORRENT_DB_PATH)
+                    conn = sqlite3.connect(scraper_utils.TORRENT_DB_PATH)
                     conn.close()
                     print("Torrent database connection test successful!")
                 except Exception as e:
@@ -100,17 +117,16 @@ def setup_database_menu():
                 print("\nFailed to create torrent database.")
 
         elif db_choice == '3':
-            from scraper_utils import DB_PATH
-            from db_setup import create_direct_db, create_torrent_db, TORRENT_DB_PATH
+            from db_setup import create_direct_db, create_torrent_db
             import sqlite3
 
-            direct_ok = create_direct_db(DB_PATH) and setup_database(logger, DB_PATH)
-            torrent_ok = create_torrent_db(TORRENT_DB_PATH)
+            direct_ok = create_direct_db(scraper_utils.DB_PATH) and setup_database(logger, scraper_utils.DB_PATH)
+            torrent_ok = create_torrent_db(scraper_utils.TORRENT_DB_PATH)
 
             if direct_ok:
-                print(f"\nDatabase created successfully at: {DB_PATH}")
+                print(f"\nDatabase created successfully at: {scraper_utils.DB_PATH}")
                 try:
-                    conn = connect_db(DB_PATH)
+                    conn = connect_db(scraper_utils.DB_PATH)
                     conn.close()
                     print("Database connection test successful!")
                 except Exception as e:
@@ -119,9 +135,11 @@ def setup_database_menu():
                 print("\nFailed to create database.")
 
             if torrent_ok:
-                print(f"\nTorrent database created successfully at: {TORRENT_DB_PATH}")
+
+                print(f"\nTorrent database created successfully at: {scraper_utils.TORRENT_DB_PATH}")
                 try:
-                    conn = sqlite3.connect(TORRENT_DB_PATH)
+                    conn = sqlite3.connect(scraper_utils.TORRENT_DB_PATH)
+
                     conn.close()
                     print("Torrent database connection test successful!")
                 except Exception as e:
@@ -140,14 +158,37 @@ def setup_database_menu():
         return setup_database_menu()
 
     elif choice == '2':
-        # Set a new database path
-        db_path = select_database_path()
-        if db_path:
-            from scraper_utils import set_db_path
-            set_db_path(db_path)
-            print(f"\nDatabase path set to: {db_path}")
+        # Submenu to set database paths
+        clear_screen()
+        print("\n--- SET DATABASE PATHS ---")
+        print("1. Direct database path")
+        print("2. Torrent database path")
+        print("3. Both")
+        print("4. Back")
+
+        path_choice = input("\nEnter your choice (1-4): ")
+
+        if path_choice == '1':
+            db_path = select_direct_db_path()
+            if db_path:
+                set_db_path(db_path)
+                print(f"\nDatabase path set to: {db_path}")
+        elif path_choice == '2':
+            torrent_path = select_torrent_db_path()
+            if torrent_path:
+                set_torrent_db_path(torrent_path)
+                print(f"\nTorrent database path set to: {torrent_path}")
+        elif path_choice == '3':
+            db_path = select_direct_db_path()
+            if db_path:
+                set_db_path(db_path)
+                print(f"\nDatabase path set to: {db_path}")
+            torrent_path = select_torrent_db_path()
+            if torrent_path:
+                set_torrent_db_path(torrent_path)
+                print(f"\nTorrent database path set to: {torrent_path}")
         else:
-            print("\nDatabase path not changed.")
+            pass
 
         input("\nPress Enter to continue...")
         return setup_database_menu()
@@ -156,10 +197,10 @@ def setup_database_menu():
         # Run database script
         script_path = input("\nEnter the path to the SQL script file: ")
         if os.path.exists(script_path):
-            from scraper_utils import DB_PATH, execute_sql_script
+            from scraper_utils import execute_sql_script
             db_path = input("\nEnter the path to the database (leave empty for default): ")
             if not db_path:
-                db_path = DB_PATH
+                db_path = scraper_utils.DB_PATH
 
             if execute_sql_script(script_path, db_path, logger):
                 print("\nScript executed successfully!")
