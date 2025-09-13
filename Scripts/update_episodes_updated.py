@@ -64,18 +64,8 @@ def get_episode_urls_from_updated_page(driver):
         driver.get(UPDATED_EPISODES_URL)
         time.sleep(3)  # Esperar a que se cargue la página y el contenido dinámico
 
-        # Hacer clic en la pestaña "Actualizados" si es necesario
-        try:
-            updated_tab = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Actualizados')]"))
-            )
-            updated_tab.click()
-            time.sleep(2)  # Esperar a que se cargue el contenido
-        except Exception as e:
-            logger.warning(f"No se pudo hacer clic en la pestaña 'Actualizados': {e}")
-            # Continuamos de todos modos, ya que podríamos estar ya en la pestaña correcta
-
-        # Esperar a que aparezca el contenedor de episodios
+        # El hash en la URL ya debería seleccionar la pestaña "Actualizados",
+        # por lo que evitamos el clic adicional que a veces falla.
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "episodes-content"))
@@ -89,12 +79,14 @@ def get_episode_urls_from_updated_page(driver):
         last_count = 0
         no_new_results_count = 0
         max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
+        max_scroll_attempts = 50  # Límite de scroll para evitar bucles infinitos
 
         # Conjunto para evitar duplicados
         seen_urls = set()
 
+        scroll_attempt = 0
         # Bucle para hacer scroll hasta que no haya más episodios
-        while True:
+        while scroll_attempt < max_scroll_attempts:
             # Obtener los episodios actuales
             page_source = driver.page_source
             soup = BeautifulSoup(page_source, "html.parser")
@@ -125,10 +117,15 @@ def get_episode_urls_from_updated_page(driver):
 
             # Hacer scroll hacia abajo
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            logger.debug(f"Scroll realizado: {len(episode_urls)} episodios encontrados")
+            logger.debug(
+                f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
 
             # Esperar a que se carguen más contenidos
-            time.sleep(2)
+            time.sleep(1)
+            scroll_attempt += 1
+
+        if scroll_attempt >= max_scroll_attempts:
+            logger.info(f"Se alcanzó el límite de {max_scroll_attempts} scrolls, finalizando.")
 
         logger.info(f"Se encontraron {len(episode_urls)} episodios actualizados")
         return episode_urls
