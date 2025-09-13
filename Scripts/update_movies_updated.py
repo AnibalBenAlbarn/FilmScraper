@@ -4,6 +4,7 @@ import concurrent.futures
 import argparse
 import os
 import traceback
+import threading
 from datetime import datetime
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
@@ -26,6 +27,34 @@ UPDATED_MOVIES_URL = f"{BASE_URL}/peliculas-actualizadas"
 
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
+
+
+# Manejador de drivers por hilo para evitar múltiples inicios de sesión
+_thread_local = threading.local()
+_active_drivers = []
+
+
+def get_logged_in_driver():
+    """Obtiene un driver asociado al hilo actual ya autenticado."""
+    if not hasattr(_thread_local, "driver"):
+        driver = create_driver()
+        if not login(driver, logger):
+            logger.error("No se pudo iniciar sesión en el driver")
+            driver.quit()
+            raise RuntimeError("Login failed")
+        _thread_local.driver = driver
+        _active_drivers.append(driver)
+    return _thread_local.driver
+
+
+def close_all_drivers():
+    """Cierra todos los drivers creados."""
+    for driver in _active_drivers:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+    _active_drivers.clear()
 
 
 # Función para obtener URLs de películas de una página
@@ -140,17 +169,10 @@ def extract_movie_links(driver, movie_id, logger):
 def extract_movie_details(movie_url, worker_id=0, db_path=None):
     logger.info(f"[Worker {worker_id}] Extrayendo detalles de la película actualizada: {movie_url}")
 
-    # Crear un nuevo driver para este worker
-    driver = create_driver()
+    driver = get_logged_in_driver()
 
     try:
-        # Iniciar sesión con este driver
-        if not login(driver, logger):
-            logger.error(f"[Worker {worker_id}] No se pudo iniciar sesión. Abortando extracción de {movie_url}")
-            driver.quit()
-            return None
-
-        # Ahora que estamos logueados, navegar a la URL de la película
+        # Navegar a la URL de la película (driver ya autenticado)
         driver.get(movie_url)
         time.sleep(1.5)  # Esperar a que se cargue la página
 
@@ -161,7 +183,6 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
             )
         except TimeoutException:
             logger.error(f"[Worker {worker_id}] Timeout esperando el título de la película en {movie_url}")
-            driver.quit()
             return None
 
         page_source = driver.page_source
@@ -171,7 +192,6 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
         title_tag = soup.find("div", id="summary-title")
         if not title_tag:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar el título de la película en {movie_url}")
-            driver.quit()
             return None
 
         title = title_tag.text.strip()
@@ -232,7 +252,6 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
 
                 if not movie_id:
                     logger.error(f"[Worker {worker_id}] Error al insertar/actualizar la película: {title}")
-                    driver.quit()
                     connection.close()
                     return None
 
@@ -250,9 +269,6 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
             # Cerrar la conexión a la base de datos
             connection.close()
 
-            # Cerrar el driver
-            driver.quit()
-
             return {
                 "id": movie_id,
                 "title": title,
@@ -268,13 +284,11 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
             logger.error(f"[Worker {worker_id}] Error al procesar la película: {e}")
             logger.debug(traceback.format_exc())
             connection.close()
-            raise
+            return None
     except Exception as e:
         logger.error(f"[Worker {worker_id}] Error al extraer detalles de la película {movie_url}: {e}")
         logger.debug(traceback.format_exc())
-        if driver:
-            driver.quit()
-        raise
+        return None
 
 
 # Función para procesar una película con reintentos
@@ -317,6 +331,7 @@ def process_movies_in_parallel(movie_urls, db_path=None):
                 logger.error(f"Error al procesar la película actualizada {url}: {e}")
                 logger.debug(traceback.format_exc())
 
+    close_all_drivers()
     return results
 
 

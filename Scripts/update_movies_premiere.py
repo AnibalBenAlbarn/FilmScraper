@@ -4,6 +4,7 @@ import concurrent.futures
 import argparse
 import os
 import traceback
+import threading
 from datetime import datetime
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
@@ -27,6 +28,32 @@ NEW_EPISODES_URL = f"{BASE_URL}/episodios#premiere"
 
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
+
+# Manejador de drivers por hilo para evitar múltiples inicios de sesión
+_thread_local = threading.local()
+_active_drivers = []
+
+
+def get_logged_in_driver():
+    """Obtiene un driver autenticado asociado al hilo actual."""
+    if not hasattr(_thread_local, "driver"):
+        driver = create_driver()
+        if not login(driver, logger):
+            logger.error("No se pudo iniciar sesión en el driver")
+            driver.quit()
+            raise RuntimeError("Login failed")
+        _thread_local.driver = driver
+        _active_drivers.append(driver)
+    return _thread_local.driver
+
+
+def close_all_drivers():
+    for driver in _active_drivers:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+    _active_drivers.clear()
 
 
 # Función para obtener URLs de episodios de la página de estrenos
@@ -261,17 +288,10 @@ def insert_episode_links(episode_id, links, connection=None, db_path=None):
 def extract_episode_details(episode_url, worker_id=0, db_path=None):
     logger.info(f"[Worker {worker_id}] Extrayendo detalles del episodio de estreno: {episode_url}")
 
-    # Crear un nuevo driver para este worker
-    driver = create_driver()
+    driver = get_logged_in_driver()
 
     try:
-        # Iniciar sesión con este driver
-        if not login(driver, logger):
-            logger.error(f"[Worker {worker_id}] No se pudo iniciar sesión. Abortando extracción de {episode_url}")
-            driver.quit()
-            return None
-
-        # Navegar a la URL del episodio
+        # Navegar a la URL del episodio (driver ya autenticado)
         driver.get(episode_url)
         time.sleep(1.5)  # Esperar a que se cargue la página
 
@@ -282,7 +302,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
             )
         except TimeoutException:
             logger.error(f"[Worker {worker_id}] Timeout esperando información del episodio en {episode_url}")
-            driver.quit()
             return None
 
         page_source = driver.page_source
@@ -292,14 +311,12 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
         series_info = soup.find("div", class_="show-data")
         if not series_info:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar información de la serie en {episode_url}")
-            driver.quit()
             return None
 
         # Extraer título de la serie
         series_title_tag = series_info.find("a", href=re.compile(r"/serie/"))
         if not series_title_tag:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar el título de la serie en {episode_url}")
-            driver.quit()
             return None
 
         series_title = series_title_tag.text.strip()
@@ -310,7 +327,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
         episode_info = soup.find("div", id="summary-title")
         if not episode_info:
             logger.error(f"[Worker {worker_id}] No se pudo encontrar información del episodio en {episode_url}")
-            driver.quit()
             return None
 
         # El formato suele ser "1x01 - Título del episodio"
@@ -319,7 +335,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
 
         if not episode_match:
             logger.error(f"[Worker {worker_id}] No se pudo extraer la información del episodio: {episode_info_text}")
-            driver.quit()
             return None
 
         season_number = int(episode_match.group(1))
@@ -393,7 +408,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 series_id = insert_series(series_title, series_year, imdb_rating, genre, connection, db_path)
                 if not series_id:
                     logger.error(f"[Worker {worker_id}] Error al insertar la serie. Abortando.")
-                    driver.quit()
                     connection.close()
                     return None
                 is_new_series = True
@@ -412,7 +426,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 season_id = insert_season(series_id, season_number, connection, db_path)
                 if not season_id:
                     logger.error(f"[Worker {worker_id}] Error al insertar la temporada. Abortando.")
-                    driver.quit()
                     connection.close()
                     return None
                 is_new_season = True
@@ -430,7 +443,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 episode_id = insert_episode(season_id, episode_number, episode_title, connection, db_path)
                 if not episode_id:
                     logger.error(f"[Worker {worker_id}] Error al insertar el episodio. Abortando.")
-                    driver.quit()
                     connection.close()
                     return None
                 is_new_episode = True
@@ -456,9 +468,6 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
             # Cerrar la conexión a la base de datos
             connection.close()
 
-            # Cerrar el driver
-            driver.quit()
-
             return {
                 "series_id": series_id,
                 "series_title": series_title,
@@ -477,13 +486,11 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
             logger.error(f"[Worker {worker_id}] Error al procesar el episodio: {e}")
             logger.debug(traceback.format_exc())
             connection.close()
-            raise
+            return None
     except Exception as e:
         logger.error(f"[Worker {worker_id}] Error al extraer detalles del episodio {episode_url}: {e}")
         logger.debug(traceback.format_exc())
-        if driver:
-            driver.quit()
-        raise
+        return None
 
 
 # Función para procesar un episodio con reintentos
@@ -527,6 +534,7 @@ def process_episodes_in_parallel(episode_urls, db_path=None):
                 logger.error(f"Error al procesar el episodio de estreno {url}: {e}")
                 logger.debug(traceback.format_exc())
 
+    close_all_drivers()
     return results
 
 
