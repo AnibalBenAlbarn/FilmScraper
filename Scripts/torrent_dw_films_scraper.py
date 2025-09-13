@@ -44,6 +44,28 @@ except ImportError:  # pragma: no cover
 
 db_path = TORRENT_DB_PATH
 
+# Count existing torrent files for a given type
+def get_total_saved_count(content_type):
+    """Return number of torrent_files records for a given content type."""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(tf.id)
+            FROM torrent_files tf
+            JOIN torrent_downloads td ON tf.torrent_id = td.id
+            WHERE td.type = ?
+            """,
+            (content_type,),
+        )
+        count = cursor.fetchone()[0]
+    except Exception:
+        count = 0
+    finally:
+        if 'conn' in locals():
+            conn.close()
+    return count
 # Headers (para evitar ser bloqueado)
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -119,19 +141,21 @@ def initialize_database():
 
 
 def load_progress():
-    """Carga el progreso guardado desde el archivo JSON."""
+    """Carga el progreso guardado desde el archivo JSON y sincroniza el total con la base de datos."""
+    db_total = get_total_saved_count('movie')
     if os.path.exists(progress_file):
         try:
             with open(progress_file, 'r') as f:
                 progress_data = json.load(f)
+                progress_data['total_saved'] = db_total
                 logger.info(
-                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, Total guardado = {progress_data.get('total_saved', 0)}")
+                    f"Progreso cargado: ID actual = {progress_data.get('current_id', 1)}, Total guardado = {db_total}")
                 return progress_data
         except Exception as e:
             logger.error(f"Error al cargar el archivo de progreso: {str(e)}")
 
     # Si no hay archivo o hay un error, devolver valores predeterminados
-    return {"current_id": 1, "total_saved": 0, "last_update": time.strftime("%Y-%m-%d %H:%M:%S")}
+    return {"current_id": 1, "total_saved": db_total, "last_update": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
 def save_progress(current_id, total_saved):
@@ -337,7 +361,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     total_saved = progress_data.get("total_saved", 0)
     next_id = current_id
 
-    logger.info(f"Iniciando scraping desde ID: {current_id}, películas guardadas anteriormente: {total_saved}")
+    logger.info(f"Iniciando scraping desde ID: {current_id}, archivos guardados anteriormente: {total_saved}")
 
     consecutive_failures = 0
 
@@ -385,7 +409,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     finally:
         # Guardar progreso final
         save_progress(next_id, total_saved)
-        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} películas en la base de datos.")
+        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} archivos de torrent en la base de datos.")
 
 
 if __name__ == "__main__":
