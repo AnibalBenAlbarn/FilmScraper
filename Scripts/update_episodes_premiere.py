@@ -130,6 +130,7 @@ def get_episode_urls_from_premiere_page(driver):
         episode_urls = []
         last_count = 0
         no_new_results_count = 0
+
         max_no_new_results = 5
         max_scroll_attempts = 50
         seen_urls = set()
@@ -146,6 +147,7 @@ def get_episode_urls_from_premiere_page(driver):
                     if episode_url not in seen_urls:
                         episode_urls.append(episode_url)
                         seen_urls.add(episode_url)
+
             if len(episode_urls) == last_count:
                 no_new_results_count += 1
                 if no_new_results_count >= max_no_new_results:
@@ -155,11 +157,13 @@ def get_episode_urls_from_premiere_page(driver):
                 no_new_results_count = 0
                 last_count = len(episode_urls)
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
             logger.debug(f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
             time.sleep(1)
             scroll_attempt += 1
         if scroll_attempt >= max_scroll_attempts:
             logger.info(f"Se alcanzó el límite de {max_scroll_attempts} scrolls, finalizando.")
+
         logger.info(f"Se encontraron {len(episode_urls)} episodios de estreno")
         return episode_urls
     except Exception as e:

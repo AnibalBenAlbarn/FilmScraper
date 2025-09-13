@@ -15,6 +15,7 @@ import update_movies_updated as movies_updated
 SCRIPT_NAME = "update_movies_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
+
 PREMIERE_MOVIES_URL = f"{BASE_URL}/peliculas-estreno"
 
 # Configurar logger propio y reemplazar el del módulo reutilizado
