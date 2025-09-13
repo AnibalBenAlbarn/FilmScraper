@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuración global
-BASE_URL = "https://hdfull.blog"
+BASE_URL = "https://hdfull.love"
 LOGIN_URL = f"{BASE_URL}/login"
 USERNAME = 'rolankor'
 PASSWORD = 'Rolankor_09'

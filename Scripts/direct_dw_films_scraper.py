@@ -17,7 +17,7 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 from bs4 import BeautifulSoup
 
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT
+from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL
 
 # Configuración del logger para evitar duplicación
 logger = logging.getLogger("films_scraper")
@@ -62,9 +62,9 @@ username = 'rolankor'
 password = 'Rolankor_09'
 
 # URL de la página de inicio de sesión y de las películas
-login_url = "https://hdfull.blog/login"
-base_url = "https://hdfull.blog"
-movies_url = "https://hdfull.blog/peliculas/imdb_rating"
+login_url = LOGIN_URL
+base_url = BASE_URL
+movies_url = f"{BASE_URL}/peliculas/imdb_rating"
 
 # Directorio para guardar el progreso
 progress_dir = os.path.join(PROJECT_ROOT, "progress")
