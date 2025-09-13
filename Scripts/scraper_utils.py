@@ -185,7 +185,9 @@ def create_driver(headless=True):
         driver = webdriver.Chrome(service=service, options=options)
 
     # Configurar timeouts
-    driver.set_page_load_timeout(30)
+    # Aumentamos el tiempo máximo de carga de página para evitar
+    # errores frecuentes de "Timed out receiving message from renderer"
+    driver.set_page_load_timeout(60)
     driver.implicitly_wait(5)
 
     return driver
