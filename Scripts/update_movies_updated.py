@@ -58,10 +58,36 @@ def close_all_drivers():
 
 
 # Función para obtener URLs de películas de una página
+def load_page(driver, url, retry_login=False):
+    """Carga una URL con reintentos para manejar timeouts."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            driver.get(url)
+            return True
+        except Exception as e:
+            logger.warning(
+                f"Error cargando {url} (intento {attempt}/{MAX_RETRIES}): {e}")
+            # En workers podemos recrear el driver si falla
+            if retry_login:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                if driver in _active_drivers:
+                    _active_drivers.remove(driver)
+                if hasattr(_thread_local, "driver"):
+                    del _thread_local.driver
+                driver = get_logged_in_driver()
+            if attempt == MAX_RETRIES:
+                return False
+            time.sleep(5)
+
+
 def get_movie_urls_from_page(page_url, driver):
     logger.info(f"Obteniendo URLs de películas de la página: {page_url}")
     try:
-        driver.get(page_url)
+        if not load_page(driver, page_url):
+            return []
         time.sleep(2)  # Esperar a que se cargue la página
 
         # Esperar a que aparezcan las películas
@@ -172,8 +198,11 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
     driver = get_logged_in_driver()
 
     try:
-        # Navegar a la URL de la película (driver ya autenticado)
-        driver.get(movie_url)
+        # Navegar a la URL de la película con reintentos
+        if not load_page(driver, movie_url, retry_login=True):
+            logger.error(
+                f"[Worker {worker_id}] No se pudo cargar la página de la película: {movie_url}")
+            return None
         time.sleep(1.5)  # Esperar a que se cargue la página
 
         # Esperar a que aparezca el título
