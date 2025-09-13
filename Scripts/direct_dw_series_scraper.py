@@ -37,6 +37,28 @@ LOG_FILE = f"{SCRIPT_NAME}.log"
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
 SERIES_BASE_URL = f"{BASE_URL}/series/imdb_rating"
 
+# Obtener total de enlaces guardados para un tipo de media
+def get_total_saved_links(content_type):
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(lfd.id)
+            FROM links_files_download lfd
+            JOIN media_downloads md ON lfd.movie_id = md.id
+            WHERE md.type = ?
+            """,
+            (content_type,),
+        )
+        count = cursor.fetchone()[0]
+    except Exception:
+        count = 0
+    finally:
+        if 'conn' in locals():
+            conn.close()
+    return count
+
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
@@ -82,6 +104,9 @@ stats = {
 stats_lock = threading.Lock()
 db_lock = threading.Lock()
 progress_lock = threading.Lock()
+total_saved_lock = threading.Lock()
+
+total_saved = 0
 
 
 # Función para reintentar operaciones propensas a fallar
@@ -1235,6 +1260,7 @@ def extract_episode_links(driver, episode_url, worker_id=0):
 
 # Worker 3: Procesa las series verificadas de páginas impares, extrae enlaces y los inserta en la BD
 def worker3_db_processor(db_path, progress_data, worker_id=0):
+    global total_saved
     logger.info(f"Worker 3 (ID {worker_id}): Iniciando procesamiento de series de páginas impares en la base de datos")
 
     processed_urls = set(progress_data.get('processed_urls_odd', []))
@@ -1312,6 +1338,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
 
 # Worker 6: Procesa las series verificadas de páginas pares, extrae enlaces y los inserta en la BD
 def worker6_db_processor(db_path, progress_data, worker_id=0):
+    global total_saved
     logger.info(f"Worker 6 (ID {worker_id}): Iniciando procesamiento de series de páginas pares en la base de datos")
 
     processed_urls = set(progress_data.get('processed_urls_even', []))
@@ -1518,6 +1545,9 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
                                 f"Nuevo enlace insertado para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
                             with stats_lock:
                                 stats['new_links'] += 1
+                            with total_saved_lock:
+                                total_saved += 1
+                                progress_data['total_saved'] = total_saved
                         else:
                             logger.debug(
                                 f"Enlace ya existe para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
@@ -1585,8 +1615,12 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
         # Limpiar caché antes de comenzar
         clear_cache()
 
-        # Cargar progreso anterior
+        # Cargar progreso anterior y sincronizar total de enlaces
         progress_data = load_progress(PROGRESS_FILE, {})
+        global total_saved
+        progress_data['total_saved'] = get_total_saved_links('serie')
+        total_saved = progress_data['total_saved']
+        logger.info(f"Enlaces guardados previamente: {total_saved}")
 
         # Crear drivers para los workers
         driver_odd = create_driver()  # Para Worker 1 (páginas impares)
@@ -1696,6 +1730,9 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
 
         # Guardar progreso final
         save_progress(PROGRESS_FILE, progress_data)
+        with total_saved_lock:
+            current_total = total_saved
+        logger.info(f"Total enlaces guardados: {current_total}")
 
         # Generar informe
         report = generate_update_report(start_time)

@@ -82,6 +82,29 @@ except ImportError:  # pragma: no cover
 
 db_path = DB_PATH
 
+
+def get_total_saved_links(content_type):
+    """Return number of links_files_download for a given media type."""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(lfd.id)
+            FROM links_files_download lfd
+            JOIN media_downloads md ON lfd.movie_id = md.id
+            WHERE md.type = ?
+            """,
+            (content_type,),
+        )
+        count = cursor.fetchone()[0]
+    except Exception:
+        count = 0
+    finally:
+        if 'conn' in locals():
+            conn.close()
+    return count
+
 # Contador de reinicios del script
 restart_count = 0
 MAX_RESTARTS = 3
@@ -91,6 +114,10 @@ NUM_WORKERS = 4
 
 # Lock para sincronizar el acceso a la base de datos
 db_lock = Lock()
+
+# Contador total de enlaces guardados
+total_saved = 0
+total_saved_lock = Lock()
 
 # Cola para almacenar las URLs de las películas a procesar
 movie_queue = Queue()
@@ -395,7 +422,7 @@ def extract_movie_details(driver, movie_url):
 def insert_data_into_db(movie):
     if not movie:
         logger.debug("No hay datos de película para insertar (posiblemente ya existe)")
-        return False
+        return 0
 
     with db_lock:
         connection = connect_db()
@@ -404,6 +431,7 @@ def insert_data_into_db(movie):
         try:
             # Iniciar transacción
             connection.execute("BEGIN TRANSACTION")
+            links_inserted = 0
 
             # Insertar la película en la base de datos con type='movie'
             cursor.execute('''
@@ -454,15 +482,16 @@ def insert_data_into_db(movie):
                 ''', (movie_id, server_id, link["language"], link["link"], quality_id))
                 logger.debug(
                     f"Enlace insertado: movie_id={movie_id}, server={link['server']}, language={link['language']}")
+                links_inserted += 1
 
             # Confirmar la transacción solo si todo fue exitoso
             connection.commit()
             logger.info(f"Datos insertados en la base de datos para la película: {movie['Nombre']}")
-            return True
+            return links_inserted
         except Exception as e:
             logger.error(f"Error al insertar datos en la base de datos: {e}")
             connection.rollback()
-            return False
+            return 0
         finally:
             cursor.close()
             connection.close()
@@ -565,33 +594,35 @@ def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
 
 
 # Función para guardar el progreso
-def save_progress(page_number, last_movie_index):
+def save_progress(page_number, last_movie_index, total_saved):
     try:
         with open(progress_file, 'w') as f:
-            json.dump({'page_number': page_number, 'last_movie_index': last_movie_index}, f)
-        logger.debug(f"Progreso guardado: página {page_number}, índice {last_movie_index}")
+            json.dump({'page_number': page_number, 'last_movie_index': last_movie_index, 'total_saved': total_saved}, f)
+        logger.debug(f"Progreso guardado: página {page_number}, índice {last_movie_index}, total {total_saved}")
     except Exception as e:
         logger.error(f"Error al guardar el progreso: {e}")
 
 
 # Función para cargar el progreso
 def load_progress():
+    db_total = get_total_saved_links('movie')
     try:
         if os.path.exists(progress_file):
             with open(progress_file, 'r') as f:
                 progress = json.load(f)
                 logger.info(
-                    f"Progreso cargado: página {progress['page_number']}, índice {progress.get('last_movie_index')}")
-                return progress['page_number'], progress.get('last_movie_index')
+                    f"Progreso cargado: página {progress['page_number']}, índice {progress.get('last_movie_index')}, Total guardado = {db_total}")
+                return progress['page_number'], progress.get('last_movie_index'), db_total
         logger.info("No se encontró archivo de progreso. Comenzando desde el principio.")
-        return 1, None
+        return 1, None, db_total
     except Exception as e:
         logger.error(f"Error al cargar el progreso: {e}")
-        return 1, None
+        return 1, None, db_total
 
 
 # Función worker para procesar películas
 def movie_worker(worker_id):
+    global total_saved
     # Crear un driver para este worker
     driver = create_driver()
 
@@ -651,7 +682,10 @@ def movie_worker(worker_id):
 
                 # Si se obtuvieron los detalles de la película, insertarlos en la base de datos
                 if success and movie_details:
-                    insert_data_into_db(movie_details)
+                    links = insert_data_into_db(movie_details)
+                    if links:
+                        with total_saved_lock:
+                            total_saved += links
 
                 # Marcar la tarea como completada
                 movie_queue.task_done()
@@ -695,8 +729,12 @@ def extract_all_movies():
             "No se pudo determinar el número total de páginas. Se procesarán hasta encontrar una página vacía.")
 
     # Cargar el progreso guardado
-    page_number, _ = load_progress()
+    global total_saved
+    page_number, _, total_saved_local = load_progress()
+    with total_saved_lock:
+        total_saved = total_saved_local
     start_index = 0
+    logger.info(f"Enlaces guardados previamente: {total_saved}")
 
     try:
         # Crear un pool de workers
@@ -723,7 +761,9 @@ def extract_all_movies():
                     logger.debug(f"Añadida película {index} a la cola: {url}")
 
                 # Guardar el progreso apuntando a la siguiente página
-                save_progress(page_number + 1, -1)
+                with total_saved_lock:
+                    current_total = total_saved
+                save_progress(page_number + 1, -1, current_total)
 
                 # Si conocemos el total de páginas y hemos llegado a la última, terminar
                 if total_pages and page_number >= total_pages:
@@ -747,9 +787,13 @@ def extract_all_movies():
     except Exception as e:
         logger.critical(f"Error crítico en el proceso principal: {e}")
     finally:
-        # Cerrar el driver{% code path="films_scraper_parallel.py" type="create" %}
+        # Cerrar el driver principal
         main_driver.quit()
         logger.info("Driver principal cerrado.")
+        with total_saved_lock:
+            current_total = total_saved
+        save_progress(page_number, -1, current_total)
+        logger.info(f"Proceso finalizado. Total enlaces guardados: {current_total}")
 
 
 # Punto de entrada principal
@@ -771,8 +815,8 @@ if __name__ == "__main__":
         logger.critical(f"Error crítico en el scraper: {e}")
         # Intentar guardar el progreso antes de salir
         try:
-            page_number, _ = load_progress()
-            save_progress(page_number, -1)
+            page_number, _, total_saved_local = load_progress()
+            save_progress(page_number, -1, total_saved_local)
         except Exception:
             pass
     finally:
