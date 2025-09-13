@@ -145,12 +145,14 @@ def get_episode_urls_from_premiere_page(driver):
         last_count = 0
         no_new_results_count = 0
         max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
+        max_scroll_attempts = 50  # Límite de scroll para evitar bucles infinitos
 
         # Conjunto para evitar duplicados
         seen_urls = set()
 
+        scroll_attempt = 0
         # Bucle para hacer scroll hasta que no haya más episodios
-        while True:
+        while scroll_attempt < max_scroll_attempts:
             # Obtener los episodios actuales
             episode_divs = driver.find_elements(By.CSS_SELECTOR, "#episodes-content .span-6.tt.view.show-view")
 
@@ -180,10 +182,15 @@ def get_episode_urls_from_premiere_page(driver):
 
             # Hacer scroll hacia abajo
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            logger.debug(f"Scroll realizado: {len(episode_urls)} episodios encontrados")
+            logger.debug(
+                f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
 
             # Esperar a que se carguen más contenidos
-            time.sleep(2)
+            time.sleep(1)
+            scroll_attempt += 1
+
+        if scroll_attempt >= max_scroll_attempts:
+            logger.info(f"Se alcanzó el límite de {max_scroll_attempts} scrolls, finalizando.")
 
         logger.info(f"Se encontraron {len(episode_urls)} episodios de estreno")
         return episode_urls
