@@ -1,770 +1,92 @@
-import time
-import re
-import concurrent.futures
-import argparse
 import os
+import argparse
 import traceback
-import threading
 from datetime import datetime
-from bs4 import BeautifulSoup
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
-# Importar utilidades compartidas
 from scraper_utils import (
-    setup_logger, create_driver, connect_db, login, setup_database,
-    save_progress, load_progress, clear_cache, find_series_by_title_year,
-    season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
+    setup_logger, create_driver, login, setup_database,
+    save_progress, load_progress, clear_cache,
+    BASE_URL, PROJECT_ROOT
 )
 
-# Configuración específica para este script
-SCRIPT_NAME = "update_episodes_premiere"
+# Reutilizamos funciones del script de películas actualizadas
+import update_movies_updated as movies_updated
+
+SCRIPT_NAME = "update_movies_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
-NEW_EPISODES_URL = f"{BASE_URL}/episodios#premiere"
+PREMIERE_MOVIES_URL = f"{BASE_URL}/peliculas#premiere"
 
-# Configurar logger
+# Configurar logger propio y reemplazar el del módulo reutilizado
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
+movies_updated.logger = logger
 
-# Manejador de drivers por hilo para evitar múltiples inicios de sesión
-_thread_local = threading.local()
-_active_drivers = []
-
-
-def get_logged_in_driver():
-    """Obtiene un driver autenticado asociado al hilo actual."""
-    if not hasattr(_thread_local, "driver"):
-        driver = create_driver()
-        if not login(driver, logger):
-            logger.error("No se pudo iniciar sesión en el driver")
-            driver.quit()
-            raise RuntimeError("Login failed")
-        _thread_local.driver = driver
-        _active_drivers.append(driver)
-    return _thread_local.driver
-
-
-def close_all_drivers():
-    for driver in _active_drivers:
-        try:
-            driver.quit()
-        except Exception:
-            pass
-    _active_drivers.clear()
-
-
-# Función para obtener URLs de episodios de la página de estrenos
-def get_episode_urls_from_premiere_page(driver):
-    logger.info("Obteniendo URLs de episodios de estreno...")
-    try:
-        driver.get(NEW_EPISODES_URL)
-        time.sleep(3)  # Esperar a que se cargue la página y el contenido dinámico
-
-        # Hacer clic en la pestaña "Estrenos" si es necesario
-        try:
-            premiere_tab = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Estrenos')]"))
-            )
-            premiere_tab.click()
-            time.sleep(2)  # Esperar a que se cargue el contenido
-        except Exception as e:
-            logger.warning(f"No se pudo hacer clic en la pestaña 'Estrenos': {e}")
-            # Continuamos de todos modos, ya que podríamos estar ya en la pestaña correcta
-
-        # Esperar a que aparezca el contenedor de episodios
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "episodes-content"))
-            )
-        except TimeoutException:
-            logger.error("Timeout esperando el contenedor de episodios")
-            return []
-
-        # Obtener todos los episodios con scroll infinito
-        episode_urls = []
-        last_count = 0
-        no_new_results_count = 0
-
-        # Conjunto para evitar duplicados
-        seen_urls = set()
-
-        # Bucle para hacer scroll y obtener más episodios
-        for scroll_attempt in range(10):  # Máximo 10 intentos de scroll
-            # Obtener los episodios actuales
-            episode_divs = driver.find_elements(By.CSS_SELECTOR, "#episodes-content .span-6.tt.view.show-view")
-
-            # Procesar los episodios visibles actualmente
-            for div in episode_divs:
-                try:
-                    link_tag = div.find_element(By.TAG_NAME, "a")
-                    episode_href = link_tag.get_attribute("href")
-
-                    # Añadir solo si no lo hemos visto antes
-                    if episode_href and episode_href not in seen_urls:
-                        episode_urls.append(episode_href)
-                        seen_urls.add(episode_href)
-                except Exception as e:
-                    logger.warning(f"Error al procesar un div de episodio: {e}")
-
-            # Verificar si se encontraron nuevos episodios
-            if len(episode_urls) == last_count:
-                no_new_results_count += 1
-                if no_new_results_count >= 3:  # Si no hay nuevos resultados después de 3 intentos, terminar
-                    logger.info(
-                        f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
-                    break
-            else:
-                no_new_results_count = 0  # Reiniciar contador si se encontraron nuevos episodios
-                last_count = len(episode_urls)
-
-            # Hacer scroll hacia abajo
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            logger.debug(f"Scroll {scroll_attempt + 1}/10: {len(episode_urls)} episodios encontrados")
-
-            # Esperar a que se carguen más contenidos
-            time.sleep(2)
-
-        logger.info(f"Se encontraron {len(episode_urls)} episodios de estreno")
-        return episode_urls
-    except Exception as e:
-        logger.error(f"Error al obtener URLs de episodios de estreno: {e}")
-        logger.debug(traceback.format_exc())
-        return []
-
-
-# Función para extraer enlaces de un episodio
-def extract_episode_links(driver, episode_id, logger):
-    """Extrae enlaces de un episodio."""
-    server_links = []
-
-    try:
-        # Encontrar todos los embed-selectors
-        embed_selectors = driver.find_elements(By.CLASS_NAME, 'embed-selector')
-        logger.debug(f"Número de enlaces encontrados: {len(embed_selectors)}")
-
-        for embed_selector in embed_selectors:
-            language = None
-            server = None
-            embedded_link = None
-
-            try:
-                # Extraer idioma y servidor antes de hacer clic
-                embed_html = embed_selector.get_attribute('outerHTML')
-                embed_soup = BeautifulSoup(embed_html, "html.parser")
-
-                if "Audio Español" in embed_soup.text:
-                    language = "Audio Español"
-                elif "Subtítulo Español" in embed_soup.text:
-                    language = "Subtítulo Español"
-                elif "Audio Latino" in embed_soup.text:
-                    language = "Audio Latino"
-
-                server_tag = embed_soup.find("b", class_="provider")
-                if server_tag:
-                    server = server_tag.text.strip().lower()
-
-                # Hacer clic en el selector
-                embed_selector.click()
-                time.sleep(2)  # Esperar a que se cargue el contenido
-            except Exception as e:
-                logger.error(f"Error al hacer clic en el embed-selector: {e}")
-                continue
-
-            try:
-                # Esperar a que aparezca el iframe
-                embed_movie = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, 'embed-movie'))
-                )
-                iframe = embed_movie.find_element(By.TAG_NAME, 'iframe')
-                embedded_link = iframe.get_attribute('src')
-                logger.debug(f"Enlace embebido extraído: {embedded_link}")
-            except Exception as e:
-                logger.error(f"Error al obtener el enlace embebido: {e}")
-                continue
-
-            # Modificar el enlace si es powvideo o streamplay
-            if embedded_link and server in ["powvideo", "streamplay"]:
-                embedded_link = re.sub(r"embed-([^-]+)-\d+x\d+\.html", r"\1", embedded_link)
-
-            # Determinar la calidad en función del servidor
-            quality = '1080p' if server in ['streamtape', 'vidmoly', 'mixdrop'] else 'hdrip'
-
-            # Añadir enlace a la lista
-            if server and language and embedded_link:
-                server_links.append({
-                    "episode_id": episode_id,
-                    "server": server,
-                    "language": language,
-                    "link": embedded_link,
-                    "quality": quality
-                })
-
-        return server_links
-    except Exception as e:
-        logger.error(f"Error al extraer enlaces: {e}")
-        logger.debug(traceback.format_exc())
-        return []
-
-
-# Función para insertar enlaces de episodios
-def insert_episode_links(episode_id, links, connection=None, db_path=None):
-    """Inserta enlaces de un episodio en la base de datos."""
-    close_connection = False
-    if connection is None:
-        connection = connect_db(db_path)
-        close_connection = True
-
-    cursor = connection.cursor()
-    inserted_count = 0
-
-    try:
-        for link in links:
-            # Insertar el servidor si no existe
-            cursor.execute('''
-                INSERT OR IGNORE INTO servers (name) VALUES (?)
-            ''', (link["server"],))
-            cursor.execute('''
-                SELECT id FROM servers WHERE name=?
-            ''', (link["server"],))
-            server_row = cursor.fetchone()
-            if not server_row:
-                logger.error(f"Error: No se encontró el servidor {link['server']}")
-                continue
-            server_id = server_row["id"]
-
-            # Obtener el ID de la calidad
-            cursor.execute('''
-                SELECT quality_id FROM qualities WHERE quality=?
-            ''', (link["quality"],))
-            quality_row = cursor.fetchone()
-            if not quality_row:
-                # Si la calidad no existe, insertarla
-                cursor.execute('''
-                    INSERT INTO qualities (quality) VALUES (?)
-                ''', (link["quality"],))
-                cursor.execute('''
-                    SELECT quality_id FROM qualities WHERE quality=?
-                ''', (link["quality"],))
-                quality_row = cursor.fetchone()
-            quality_id = quality_row["quality_id"]
-
-            # Verificar si el enlace ya existe
-            cursor.execute('''
-                SELECT id FROM links_files_download 
-                WHERE episode_id=? AND server_id=? AND language=? AND link=?
-            ''', (episode_id, server_id, link["language"], link["link"]))
-            link_exists = cursor.fetchone()
-
-            if not link_exists:
-                # Insertar el enlace en la base de datos
-                cursor.execute('''
-                    INSERT INTO links_files_download (episode_id, server_id, language, link, quality_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, datetime('now'))
-                ''', (episode_id, server_id, link["language"], link["link"], quality_id))
-                inserted_count += 1
-                logger.debug(
-                    f"Enlace insertado: episode_id={episode_id}, server={link['server']}, language={link['language']}")
-            else:
-                logger.debug(
-                    f"Enlace ya existe: episode_id={episode_id}, server={link['server']}, language={link['language']}")
-
-        connection.commit()
-        return inserted_count
-    except Exception as e:
-        logger.error(f"Error al insertar enlaces del episodio: {e}")
-        logger.debug(traceback.format_exc())
-        connection.rollback()
-        return 0
-    finally:
-        cursor.close()
-        if close_connection:
-            connection.close()
-
-
-# Función para extraer detalles del episodio
-def extract_episode_details(episode_url, worker_id=0, db_path=None):
-    logger.info(f"[Worker {worker_id}] Extrayendo detalles del episodio de estreno: {episode_url}")
-
-    driver = get_logged_in_driver()
-
-    try:
-        # Navegar a la URL del episodio (driver ya autenticado)
-        driver.get(episode_url)
-        time.sleep(1.5)  # Esperar a que se cargue la página
-
-        # Esperar a que aparezca la información del episodio
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "summary-title"))
-            )
-        except TimeoutException:
-            logger.error(f"[Worker {worker_id}] Timeout esperando información del episodio en {episode_url}")
-            return None
-
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "html.parser")
-
-        # Extraer información de la serie
-        series_info = soup.find("div", class_="show-data")
-        if not series_info:
-            logger.error(f"[Worker {worker_id}] No se pudo encontrar información de la serie en {episode_url}")
-            return None
-
-        # Extraer título de la serie
-        series_title_tag = series_info.find("a", href=re.compile(r"/serie/"))
-        if not series_title_tag:
-            logger.error(f"[Worker {worker_id}] No se pudo encontrar el título de la serie en {episode_url}")
-            return None
-
-        series_title = series_title_tag.text.strip()
-        series_url = BASE_URL + series_title_tag['href'] if not series_title_tag['href'].startswith('http') else \
-        series_title_tag['href']
-
-        # Extraer información del episodio
-        episode_info = soup.find("div", id="summary-title")
-        if not episode_info:
-            logger.error(f"[Worker {worker_id}] No se pudo encontrar información del episodio en {episode_url}")
-            return None
-
-        # El formato suele ser "1x01 - Título del episodio"
-        episode_info_text = episode_info.text.strip()
-        episode_match = re.match(r'(\d+)x(\d+)\s*-\s*(.*)', episode_info_text)
-
-        if not episode_match:
-            logger.error(f"[Worker {worker_id}] No se pudo extraer la información del episodio: {episode_info_text}")
-            return None
-
-        season_number = int(episode_match.group(1))
-        episode_number = int(episode_match.group(2))
-        episode_title = episode_match.group(3).strip()
-
-        logger.info(
-            f"[Worker {worker_id}] Información extraída: Serie={series_title}, Temporada={season_number}, Episodio={episode_number}, Título={episode_title}")
-
-        # Extraer año de la serie (necesitamos visitar la página de la serie)
-        series_year = None
-        imdb_rating = None
-        genre = None
-
-        try:
-            driver.get(series_url)
-            time.sleep(1.5)  # Esperar a que se cargue la página
-
-            # Esperar a que aparezca la información de la serie
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "show-details"))
-                )
-            except TimeoutException:
-                logger.warning(f"[Worker {worker_id}] Timeout esperando detalles de la serie en {series_url}")
-
-            series_page_source = driver.page_source
-            series_soup = BeautifulSoup(series_page_source, "html.parser")
-
-            show_details = series_soup.find("div", class_="show-details")
-            if show_details:
-                year_tag = show_details.find("a", href=re.compile(r"/buscar/year/"))
-                if year_tag:
-                    try:
-                        series_year = int(year_tag.text.strip())
-                        logger.debug(f"[Worker {worker_id}] Año de la serie extraído: {series_year}")
-                    except ValueError:
-                        logger.warning(
-                            f"[Worker {worker_id}] No se pudo convertir el año a entero: {year_tag.text.strip()}")
-
-                # También podemos extraer rating y género mientras estamos aquí
-                imdb_rating_tag = show_details.find("p", itemprop="aggregateRating")
-                if imdb_rating_tag and imdb_rating_tag.find("a"):
-                    rating_text = imdb_rating_tag.find("a").text.strip()
-                    try:
-                        imdb_rating = float(rating_text)
-                        logger.debug(f"[Worker {worker_id}] IMDB Rating extraído: {imdb_rating}")
-                    except ValueError:
-                        logger.warning(f"[Worker {worker_id}] No se pudo convertir el rating a float: {rating_text}")
-
-                genre_tags = show_details.find_all("a", href=re.compile(r"/tags-tv"))
-                genre = ", ".join([tag.text.strip() for tag in genre_tags]) if genre_tags else None
-                logger.debug(f"[Worker {worker_id}] Género extraído: {genre}")
-        except Exception as e:
-            logger.error(f"[Worker {worker_id}] Error al extraer información adicional de la serie: {e}")
-            logger.debug(traceback.format_exc())
-            # Continuamos aunque no podamos obtener el año
-
-        # Crear una conexión a la base de datos para reutilizarla
-        connection = connect_db(db_path)
-
-        try:
-            # Buscar la serie en la base de datos
-            series_data = find_series_by_title_year(series_title, series_year, connection, db_path)
-            series_id = None
-
-            # Si la serie no existe, la insertamos
-            if not series_data:
-                logger.info(
-                    f"[Worker {worker_id}] Serie no encontrada en la base de datos. Insertando nueva serie: {series_title} ({series_year})")
-                series_id = insert_series(series_title, series_year, imdb_rating, genre, connection, db_path)
-                if not series_id:
-                    logger.error(f"[Worker {worker_id}] Error al insertar la serie. Abortando.")
-                    connection.close()
-                    return None
-                is_new_series = True
-            else:
-                series_id = series_data['id']
-                logger.info(f"[Worker {worker_id}] Serie encontrada en la base de datos con ID {series_id}")
-                is_new_series = False
-
-            # Verificar si la temporada existe
-            season_exists_flag, season_id = season_exists(series_id, season_number, connection, db_path)
-
-            # Si la temporada no existe, la insertamos
-            if not season_exists_flag:
-                logger.info(
-                    f"[Worker {worker_id}] Temporada {season_number} no encontrada. Insertando nueva temporada.")
-                season_id = insert_season(series_id, season_number, connection, db_path)
-                if not season_id:
-                    logger.error(f"[Worker {worker_id}] Error al insertar la temporada. Abortando.")
-                    connection.close()
-                    return None
-                is_new_season = True
-            else:
-                logger.info(f"[Worker {worker_id}] Temporada {season_number} encontrada con ID {season_id}")
-                is_new_season = False
-
-            # Verificar si el episodio existe
-            episode_exists_flag, episode_id = episode_exists(season_id, episode_number, episode_title, connection,
-                                                             db_path)
-
-            # Si el episodio no existe, lo insertamos
-            if not episode_exists_flag:
-                logger.info(f"[Worker {worker_id}] Episodio {episode_number} no encontrado. Insertando nuevo episodio.")
-                episode_id = insert_episode(season_id, episode_number, episode_title, connection, db_path)
-                if not episode_id:
-                    logger.error(f"[Worker {worker_id}] Error al insertar el episodio. Abortando.")
-                    connection.close()
-                    return None
-                is_new_episode = True
-            else:
-                logger.info(f"[Worker {worker_id}] Episodio {episode_number} encontrado con ID {episode_id}")
-                is_new_episode = False
-
-            # Volver a la página del episodio para extraer los enlaces
-            driver.get(episode_url)
-            time.sleep(1.5)  # Esperar a que se cargue la página
-
-            # Extraer enlaces usando la función específica
-            server_links = extract_episode_links(driver, episode_id, logger)
-
-            # Insertar los enlaces en la base de datos
-            new_links_count = 0
-            if server_links:
-                new_links_count = insert_episode_links(episode_id, server_links, connection, db_path)
-                logger.info(f"[Worker {worker_id}] Se insertaron {new_links_count} nuevos enlaces para el episodio")
-            else:
-                logger.warning(f"[Worker {worker_id}] No se encontraron enlaces para el episodio")
-
-            # Cerrar la conexión a la base de datos
-            connection.close()
-
-            return {
-                "series_id": series_id,
-                "series_title": series_title,
-                "series_year": series_year,
-                "season_id": season_id,
-                "season_number": season_number,
-                "episode_id": episode_id,
-                "episode_number": episode_number,
-                "episode_title": episode_title,
-                "new_links_count": new_links_count,
-                "is_new_series": is_new_series,
-                "is_new_season": is_new_season,
-                "is_new_episode": is_new_episode
-            }
-        except Exception as e:
-            logger.error(f"[Worker {worker_id}] Error al procesar el episodio: {e}")
-            logger.debug(traceback.format_exc())
-            connection.close()
-            return None
-    except Exception as e:
-        logger.error(f"[Worker {worker_id}] Error al extraer detalles del episodio {episode_url}: {e}")
-        logger.debug(traceback.format_exc())
-        return None
-
-
-# Función para procesar un episodio con reintentos
-def process_episode_with_retries(episode_url, worker_id, db_path=None):
-    for attempt in range(MAX_RETRIES):
-        try:
-            return extract_episode_details(episode_url, worker_id, db_path)
-        except Exception as e:
-            logger.error(
-                f"[Worker {worker_id}] Error al procesar el episodio {episode_url} (intento {attempt + 1}/{MAX_RETRIES}): {e}")
-            if attempt < MAX_RETRIES - 1:
-                logger.info(f"[Worker {worker_id}] Esperando 30 segundos antes de reintentar...")
-                time.sleep(30)  # Esperar 30 segundos antes de reintentar
-
-    logger.error(
-        f"[Worker {worker_id}] No se pudo procesar el episodio {episode_url} después de {MAX_RETRIES} intentos")
-    return None
-
-
-# Función para procesar episodios en paralelo
-def process_episodes_in_parallel(episode_urls, db_path=None):
-    logger.info(f"Procesando {len(episode_urls)} episodios de estreno en paralelo con {MAX_WORKERS} workers")
-    results = []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Crear un diccionario de futuros/tareas
-        future_to_url = {
-            executor.submit(process_episode_with_retries, url, i % MAX_WORKERS, db_path): url
-            for i, url in enumerate(episode_urls)
-        }
-
-        # Procesar los resultados a medida que se completan
-        for future in concurrent.futures.as_completed(future_to_url):
-            url = future_to_url[future]
-            try:
-                episode_data = future.result()
-                if episode_data:
-                    results.append(episode_data)
-                    logger.info(f"Episodio de estreno procesado correctamente: {url}")
-            except Exception as e:
-                logger.error(f"Error al procesar el episodio de estreno {url}: {e}")
-                logger.debug(traceback.format_exc())
-
-    close_all_drivers()
-    return results
-
-
-# Función para generar informe de actualización
-def generate_update_report(start_time, processed_episodes):
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds() / 60  # en minutos
-
-    # Contar episodios nuevos, temporadas nuevas y series nuevas
-    new_episodes_count = sum(1 for ep in processed_episodes if ep.get("is_new_episode", False))
-    new_seasons_count = sum(1 for ep in processed_episodes if ep.get("is_new_season", False))
-    new_series_count = sum(1 for ep in processed_episodes if ep.get("is_new_series", False))
-
-    # Contar enlaces nuevos
-    new_links_count = sum(ep.get("new_links_count", 0) for ep in processed_episodes)
-
-    # Generar informe
-    report = f"""
-INFORME DE ACTUALIZACIÓN DE EPISODIOS DE ESTRENO - {end_time.strftime('%Y-%m-%d %H:%M:%S')}
-===========================================================================
-
-Duración: {duration:.2f} minutos
-
-RESUMEN:
-- Episodios procesados: {len(processed_episodes)}
-- Nuevas series añadidas: {new_series_count}
-- Nuevas temporadas añadidas: {new_seasons_count}
-- Nuevos episodios añadidos: {new_episodes_count}
-- Total de nuevos enlaces: {new_links_count}
-
-DETALLES:
-"""
-
-    # Agrupar episodios por serie
-    episodes_by_series = {}
-    for ep in processed_episodes:
-        series_title = ep.get("series_title", "Desconocida")
-        if series_title not in episodes_by_series:
-            episodes_by_series[series_title] = []
-        episodes_by_series[series_title].append(ep)
-
-    # Añadir detalles de cada serie
-    for series_title, episodes in episodes_by_series.items():
-        report += f"\\n{series_title} ({episodes[0].get('series_year', 'Año desconocido')}):\\n"
-
-        # Agrupar episodios por temporada
-        episodes_by_season = {}
-        for ep in episodes:
-            season_number = ep.get("season_number", 0)
-            if season_number not in episodes_by_season:
-                episodes_by_season[season_number] = []
-            episodes_by_season[season_number].append(ep)
-
-        # Añadir detalles de cada temporada
-        for season_number, season_episodes in sorted(episodes_by_season.items()):
-            report += f"  Temporada {season_number}:\\n"
-
-            # Añadir detalles de cada episodio
-            for ep in sorted(season_episodes, key=lambda x: x.get("episode_number", 0)):
-                status = []
-                if ep.get("is_new_series", False):
-                    status.append("NUEVA SERIE")
-                if ep.get("is_new_season", False):
-                    status.append("NUEVA TEMPORADA")
-                if ep.get("is_new_episode", False):
-                    status.append("NUEVO EPISODIO")
-
-                status_str = f" ({', '.join(status)})" if status else ""
-                report += f"    {ep.get('episode_number', '?')}. {ep.get('episode_title', 'Sin título')} - {ep.get('new_links_count', 0)} nuevos enlaces{status_str}\\n"
-
-    report += """
-===========================================================================
-Este es un mensaje automático generado por el sistema de actualización de episodios.
-"""
-
-    return report
-
-
-# Función para registrar estadísticas de actualización
-def log_update_stats(start_time, processed_episodes, db_path=None):
-    try:
-        connection = connect_db(db_path)
-        cursor = connection.cursor()
-
-        # Obtener estadísticas de la actualización actual
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds() / 60  # en minutos
-
-        # Contar episodios nuevos, temporadas nuevas y series nuevas
-        new_episodes_count = sum(1 for ep in processed_episodes if ep.get("is_new_episode", False))
-        new_seasons_count = sum(1 for ep in processed_episodes if ep.get("is_new_season", False))
-        new_series_count = sum(1 for ep in processed_episodes if ep.get("is_new_series", False))
-
-        # Contar enlaces nuevos
-        new_links_count = sum(ep.get("new_links_count", 0) for ep in processed_episodes)
-
-        # Verificar si ya existe una entrada para hoy
-        cursor.execute('''
-            SELECT * FROM episode_update_stats WHERE update_date = date('now')
-        ''')
-        existing_stats = cursor.fetchone()
-
-        if existing_stats:
-            # Actualizar estadísticas existentes
-            cursor.execute('''
-                UPDATE episode_update_stats 
-                SET duration_minutes = duration_minutes + ?,
-                    new_series = new_series + ?,
-                    new_seasons = new_seasons + ?,
-                    new_episodes = new_episodes + ?,
-                    new_links = new_links + ?
-                WHERE update_date = date('now')
-            ''', (duration, new_series_count, new_seasons_count, new_episodes_count, new_links_count))
-        else:
-            # Insertar nuevas estadísticas
-            cursor.execute('''
-                INSERT INTO episode_update_stats 
-                (update_date, duration_minutes, new_series, new_seasons, new_episodes, new_links)
-                VALUES (date('now'), ?, ?, ?, ?, ?)
-            ''', (duration, new_series_count, new_seasons_count, new_episodes_count, new_links_count))
-
-        connection.commit()
-
-        logger.info(
-            f"Estadísticas de actualización: Duración={duration:.2f} minutos, Nuevas series={new_series_count}, "
-            f"Nuevas temporadas={new_seasons_count}, Nuevos episodios={new_episodes_count}, Nuevos enlaces={new_links_count}")
-        return {
-            "duration": duration,
-            "new_series": new_series_count,
-            "new_seasons": new_seasons_count,
-            "new_episodes": new_episodes_count,
-            "new_links": new_links_count
-        }
-    except Exception as e:
-        logger.error(f"Error al registrar estadísticas de actualización: {e}")
-        logger.debug(traceback.format_exc())
-        return None
-    finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-        if 'connection' in locals() and connection:
-            connection.close()
-
-
-# Función principal para procesar episodios de estreno
-def process_premiere_episodes(db_path=None):
+def process_premiere_movies(db_path=None):
+    """Procesa las películas de estreno obteniendo enlaces y actualizando la BD."""
     start_time = datetime.now()
-    logger.info(f"Iniciando actualización de episodios de estreno: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
+    logger.info(
+        f"Iniciando procesamiento de películas de estreno: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     try:
-        # Configurar la base de datos
         setup_database(logger, db_path)
-
-        # Limpiar caché antes de comenzar
         clear_cache()
 
-        # Crear un driver principal para obtener las URLs de los episodios
         main_driver = create_driver()
-
-        # Primero hacer login
         if not login(main_driver, logger):
-            logger.error("No se pudo iniciar sesión. Abortando procesamiento de episodios de estreno.")
+            logger.error("No se pudo iniciar sesión. Abortando procesamiento de películas de estreno.")
             main_driver.quit()
             return []
 
-        # Obtener URLs de episodios de estreno
-        episode_urls = get_episode_urls_from_premiere_page(main_driver)
+        processed_urls = load_progress(PROGRESS_FILE, {}).get('processed_urls', [])
+        movie_urls = movies_updated.get_movie_urls_from_page(PREMIERE_MOVIES_URL, main_driver)
         main_driver.quit()
 
-        if not episode_urls:
-            logger.warning("No se encontraron episodios de estreno. Finalizando.")
+        if not movie_urls:
+            logger.warning("No se encontraron películas de estreno. Finalizando.")
             return []
 
-        # Cargar progreso anterior
-        processed_urls = load_progress(PROGRESS_FILE, {}).get('processed_urls', [])
-
-        # Filtrar URLs ya procesadas
-        new_urls = [url for url in episode_urls if url not in processed_urls]
-        logger.info(f"Encontrados {len(new_urls)} episodios nuevos para procesar")
-
+        new_urls = [url for url in movie_urls if url not in processed_urls]
+        logger.info(f"Encontradas {len(new_urls)} películas nuevas para procesar")
         if not new_urls:
-            logger.info("No hay episodios nuevos para procesar. Finalizando.")
+            logger.info("No hay películas nuevas para procesar. Finalizando.")
             return []
 
-        # Procesar episodios en paralelo
-        processed_episodes = process_episodes_in_parallel(new_urls, db_path)
-
-        # Actualizar la lista de URLs procesadas
+        processed_movies = movies_updated.process_movies_in_parallel(new_urls, db_path)
         processed_urls.extend(new_urls)
 
-        # Guardar progreso
         save_progress(PROGRESS_FILE, {
             'processed_urls': processed_urls,
             'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         })
 
-        # Registrar estadísticas
-        stats = log_update_stats(start_time, processed_episodes, db_path)
-
-        # Generar informe
-        report = generate_update_report(start_time, processed_episodes)
+        movies_updated.log_update_stats(start_time, processed_movies, db_path)
+        report = movies_updated.generate_update_report(start_time, processed_movies)
         logger.info(report)
 
-        logger.info(f"Actualización de episodios de estreno completada: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        return processed_episodes
+        logger.info(
+            f"Procesamiento de películas de estreno completado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        return processed_movies
     except Exception as e:
-        logger.critical(f"Error crítico en la actualización de episodios de estreno: {e}")
+        logger.critical(f"Error crítico en el procesamiento de películas de estreno: {e}")
         logger.debug(traceback.format_exc())
         return []
+    finally:
+        movies_updated.close_all_drivers()
 
 
-# Punto de entrada principal
 if __name__ == "__main__":
-    # Configurar argumentos de línea de comandos
-    parser = argparse.ArgumentParser(description='Actualización de episodios de estreno')
+    parser = argparse.ArgumentParser(description='Actualización de películas de estreno')
     parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')
     parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')
     parser.add_argument('--reset-progress', action='store_true',
-                        help='Reiniciar el progreso (procesar todos los episodios)')
+                        help='Reiniciar el progreso (procesar todas las películas)')
 
     args = parser.parse_args()
 
-    # Actualizar configuración de paralelización si se especifica
     if args.max_workers:
-        MAX_WORKERS = args.max_workers
+        movies_updated.MAX_WORKERS = args.max_workers
 
-    # Reiniciar progreso si se solicita
     if args.reset_progress and os.path.exists(PROGRESS_FILE):
         os.remove(PROGRESS_FILE)
-        logger.info("Progreso reiniciado. Se procesarán todos los episodios.")
+        logger.info("Progreso reiniciado. Se procesarán todas las películas.")
 
-    # Ejecutar la actualización de episodios
-    process_premiere_episodes(args.db_path)
+    process_premiere_movies(args.db_path)
