@@ -528,6 +528,22 @@ def count_total_pages(driver):
         return None
 
 
+# Función auxiliar para localizar los divs de películas
+def _find_movie_divs(driver):
+    """Devuelve una lista de divs que representan películas en la página actual."""
+    for container_selector in ["div.center", "div.container"]:
+        try:
+            container = driver.find_element(By.CSS_SELECTOR, container_selector)
+            return container.find_elements(By.CSS_SELECTOR, "div.span-6.inner-6.tt.view")
+        except Exception:
+            continue
+    # Fallback: buscar directamente todos los divs de película
+    try:
+        return driver.find_elements(By.CSS_SELECTOR, "div.span-6.inner-6.tt.view")
+    except Exception:
+        return []
+
+
 # Función para extraer URLs de películas de una página
 def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
     logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
@@ -535,19 +551,8 @@ def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
         driver.get(page_url)
         time.sleep(2)  # Esperar a que se cargue la página
 
-        # Obtener el contenedor principal de películas
-        try:
-            center_div = driver.find_element(By.CSS_SELECTOR, "div.center")
-            # Obtener todas las películas dentro del contenedor
-            movie_divs = center_div.find_elements(By.CSS_SELECTOR, "div.span-6.inner-6.tt.view")
-        except Exception as e:
-            logger.error(f"Error al obtener el contenedor principal (div.center): {e}")
-            # Intento alternativo si falla el selector específico
-            try:
-                movie_divs = driver.find_elements(By.CSS_SELECTOR, "div.span-6.inner-6.tt.view")
-            except Exception as e2:
-                logger.error(f"Error al obtener películas con selector alternativo: {e2}")
-                movie_divs = []
+        # Obtener todos los divs de películas de la página
+        movie_divs = _find_movie_divs(driver)
 
         total_movies = len(movie_divs)
         logger.info(f"Encontradas {total_movies} películas en la página {page_number}")
@@ -570,20 +575,17 @@ def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
                 driver.refresh()
                 time.sleep(2)
 
-                # Volver a obtener el contenedor y las películas
-                try:
-                    center_div = driver.find_element(By.CSS_SELECTOR, "div.center")
-                    movie_divs = center_div.find_elements(By.CSS_SELECTOR, "div.span-6.inner-6.tt.view")
-
-                    if i < len(movie_divs):
+                movie_divs = _find_movie_divs(driver)
+                if i < len(movie_divs):
+                    try:
                         movie_div = movie_divs[i]
                         link_tag = movie_div.find_element(By.TAG_NAME, "a")
                         movie_url = link_tag.get_attribute("href")
                         movie_urls.append((i, movie_url))
-                    else:
-                        logger.error(f"Índice {i} fuera de rango después de refrescar")
-                except Exception as e:
-                    logger.error(f"Error al refrescar elementos: {e}")
+                    except Exception as e:
+                        logger.error(f"Error al obtener la URL después del refresco: {e}")
+                else:
+                    logger.error(f"Índice {i} fuera de rango después de refrescar")
             except Exception as e:
                 logger.error(f"Error al obtener la URL de la película en el índice {i}: {e}")
 
