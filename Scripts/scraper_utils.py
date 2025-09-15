@@ -493,6 +493,18 @@ def link_exists(movie_id=None, episode_id=None, server_id=None, language=None, l
             connection.close()
 
 
+# Función de utilidad para registrar inserciones en la base de datos
+def log_link_insertion(logger, *, movie_id=None, episode_id=None, server=None, language=None):
+    """Registra un mensaje estandarizado al insertar un enlace."""
+    if movie_id is not None:
+        logger.debug(
+            f"Enlace insertado: movie_id={movie_id}, server={server}, language={language}"
+        )
+    elif episode_id is not None:
+        logger.debug(
+            f"Enlace insertado: episode_id={episode_id}, server={server}, language={language}"
+        )
+
 # Función para insertar enlaces en lote
 def insert_links_batch(links, logger, connection=None, db_path=None):
     """Inserta múltiples enlaces en la base de datos de forma eficiente."""
@@ -538,17 +550,24 @@ def insert_links_batch(links, logger, connection=None, db_path=None):
             if not exists:
                 if "movie_id" in link and link["movie_id"]:
                     cursor.execute('''
-                        INSERT INTO links_files_download 
+                        INSERT INTO links_files_download
                         (movie_id, server_id, language, link, quality_id, created_at)
                         VALUES (?, ?, ?, ?, ?, datetime('now'))
                     ''', (link["movie_id"], server_id, link["language"], link["link"], quality_id))
                 elif "episode_id" in link and link["episode_id"]:
                     cursor.execute('''
-                        INSERT INTO links_files_download 
+                        INSERT INTO links_files_download
                         (episode_id, server_id, language, link, quality_id, created_at)
                         VALUES (?, ?, ?, ?, ?, datetime('now'))
                     ''', (link["episode_id"], server_id, link["language"], link["link"], quality_id))
 
+                log_link_insertion(
+                    logger,
+                    movie_id=link.get("movie_id"),
+                    episode_id=link.get("episode_id"),
+                    server=link["server"],
+                    language=link["language"],
+                )
                 inserted_count += 1
 
         connection.commit()
