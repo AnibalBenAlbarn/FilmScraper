@@ -20,9 +20,27 @@ from bs4 import BeautifulSoup
 
 
 try:  # pragma: no cover - compatible al ejecutarse como script o módulo
-    from .scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
+    from .scraper_utils import (
+        PROJECT_ROOT,
+        BASE_URL,
+        LOGIN_URL,
+        DB_PATH,
+        setup_logger,
+        log_link_insertion,
+        get_shutdown_event,
+    )
 except ImportError:  # pragma: no cover
-    from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
+    from scraper_utils import (
+        PROJECT_ROOT,
+        BASE_URL,
+        LOGIN_URL,
+        DB_PATH,
+        setup_logger,
+        log_link_insertion,
+        get_shutdown_event,
+    )
+
+shutdown_event = get_shutdown_event()
     
 from webdriver_manager.chrome import ChromeDriverManager
 
@@ -643,6 +661,9 @@ def movie_worker(worker_id):
 
     try:
         while True:
+            if shutdown_event.is_set():
+                logger.info(f"Worker {worker_id}: Señal de apagado recibida. Saliendo...")
+                break
             try:
                 # Obtener datos de película de la cola
                 page_num, index, movie_url, title = movie_queue.get(block=False)
@@ -756,7 +777,7 @@ def extract_all_movies(start_page=None, db_path=None):
             workers = [executor.submit(movie_worker, i + 1) for i in range(NUM_WORKERS)]
 
             # Procesar páginas una por una
-            while True:
+            while not shutdown_event.is_set():
                 page_url = f"{movies_url}/{page_number}"
                 logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
 
@@ -780,8 +801,15 @@ def extract_all_movies(start_page=None, db_path=None):
                 save_progress(page_number, None, -1, current_total)
 
                 for data in movie_urls:
+                    if shutdown_event.is_set():
+                        logger.info("Señal de apagado recibida durante el llenado de la cola de películas")
+                        break
                     movie_queue.put(data)
                     logger.debug(f"Añadida película {data[1]} a la cola: {data[2]}")
+
+                if shutdown_event.is_set():
+                    logger.info("Deteniendo procesamiento de páginas por señal de apagado")
+                    break
 
                 if total_pages and page_number >= total_pages:
                     logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
@@ -791,6 +819,13 @@ def extract_all_movies(start_page=None, db_path=None):
 
             # Esperar a que se complete el procesamiento de todas las películas en la cola
             logger.info("Esperando a que se completen todas las tareas en la cola...")
+            if shutdown_event.is_set():
+                while not movie_queue.empty():
+                    try:
+                        movie_queue.get_nowait()
+                        movie_queue.task_done()
+                    except Exception:
+                        break
             movie_queue.join()
 
             # Cancelar los workers
@@ -840,4 +875,9 @@ if __name__ == "__main__":
         except Exception:
             pass
     finally:
+        try:
+            page_number, _, _, total_saved_local = load_progress()
+            save_progress(page_number, None, -1, total_saved_local)
+        except Exception:
+            pass
         logger.info("Scraper finalizado.")

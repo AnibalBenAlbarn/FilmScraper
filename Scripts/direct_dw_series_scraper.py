@@ -18,20 +18,52 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 # Import shared utilities (compatible when run as script or module)
 try:
     from .scraper_utils import (
-        setup_logger, create_driver, connect_db, login, setup_database,
-        save_progress, load_progress, clear_cache, find_series_by_title_year,
-        season_exists, episode_exists, insert_series, insert_season,
-        insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+        setup_logger,
+        create_driver,
+        connect_db,
+        login,
+        setup_database,
+        save_progress,
+        load_progress,
+        clear_cache,
+        find_series_by_title_year,
+        season_exists,
+        episode_exists,
+        insert_series,
+        insert_season,
+        insert_episode,
+        BASE_URL,
+        MAX_WORKERS,
+        MAX_RETRIES,
+        PROJECT_ROOT,
         log_link_insertion,
+        get_shutdown_event,
     )
 except ImportError:  # pragma: no cover - fallback when executed directly
     from scraper_utils import (
-        setup_logger, create_driver, connect_db, login, setup_database,
-        save_progress, load_progress, clear_cache, find_series_by_title_year,
-        season_exists, episode_exists, insert_series, insert_season,
-        insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+        setup_logger,
+        create_driver,
+        connect_db,
+        login,
+        setup_database,
+        save_progress,
+        load_progress,
+        clear_cache,
+        find_series_by_title_year,
+        season_exists,
+        episode_exists,
+        insert_series,
+        insert_season,
+        insert_episode,
+        BASE_URL,
+        MAX_WORKERS,
+        MAX_RETRIES,
+        PROJECT_ROOT,
         log_link_insertion,
+        get_shutdown_event,
     )
+
+shutdown_event = get_shutdown_event()
 
 # Configuración específica para este script
 SCRIPT_NAME = "direct_dw_series_scraper"
@@ -70,9 +102,6 @@ url_queue_even = Queue()  # Worker 4 -> Worker 5/6 (páginas pares)
 series_data_queue_odd = Queue()  # Worker 2 -> Worker 3 (datos de series de páginas impares)
 series_data_queue_even = Queue()  # Worker 5 -> Worker 6 (datos de series de páginas pares)
 processed_series_queue = Queue()  # Worker 3/6 -> Estadísticas finales
-
-# Evento para señalizar parada
-stop_event = threading.Event()
 
 # Eventos para señalizar que los workers están activos
 worker1_active = threading.Event()
@@ -140,7 +169,7 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
         progress_data['pages_odd'] = {}
 
     try:
-        while not stop_event.is_set():
+        while not shutdown_event.is_set():
             # Si se especificó un máximo de páginas y ya lo alcanzamos, salir
             if max_pages and current_page > start_page + max_pages - 1:
                 logger.info(f"Worker 1: Se alcanzó el límite de {max_pages} páginas. Finalizando.")
@@ -198,7 +227,7 @@ def worker1_url_extractor(driver, progress_data, start_page=1, max_pages=None):
 
             # Poner las URLs en la cola para el Worker 2
             for url in new_urls:
-                if stop_event.is_set():
+                if shutdown_event.is_set():
                     break
                 url_queue_odd.put(url)
                 logger.debug(f"Worker 1: URL añadida a la cola: {url}")
@@ -251,7 +280,7 @@ def worker4_url_extractor(driver, progress_data, start_page=2, max_pages=None):
         progress_data['pages_even'] = {}
 
     try:
-        while not stop_event.is_set():
+        while not shutdown_event.is_set():
             # Si se especificó un máximo de páginas y ya lo alcanzamos, salir
             if max_pages and current_page > start_page + max_pages - 1:
                 logger.info(f"Worker 4: Se alcanzó el límite de {max_pages} páginas. Finalizando.")
@@ -310,7 +339,7 @@ def worker4_url_extractor(driver, progress_data, start_page=2, max_pages=None):
 
             # Poner las URLs en la cola para el Worker 5
             for url in new_urls:
-                if stop_event.is_set():
+                if shutdown_event.is_set():
                     break
                 url_queue_even.put(url)
                 logger.debug(f"Worker 4: URL añadida a la cola: {url}")
@@ -428,7 +457,7 @@ def get_series_urls_from_page(driver, page_number):
 def worker2_series_extractor(driver, db_path, worker_id=0):
     logger.info(f"Worker 2 (ID {worker_id}): Iniciando extracción de datos de series de páginas impares")
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener una URL de la cola con timeout
             try:
@@ -511,7 +540,7 @@ def worker2_series_extractor(driver, db_path, worker_id=0):
 def worker5_series_extractor(driver, db_path, worker_id=0):
     logger.info(f"Worker 5 (ID {worker_id}): Iniciando extracción de datos de series de páginas pares")
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener una URL de la cola con timeout
             try:
@@ -850,7 +879,7 @@ def get_available_seasons(driver, series_url, worker_id=0):
     max_empty_seasons = 3  # Máximo número de temporadas vacías consecutivas antes de parar
     empty_seasons_count = 0
 
-    while empty_seasons_count < max_empty_seasons and not stop_event.is_set():
+    while empty_seasons_count < max_empty_seasons and not shutdown_event.is_set():
         season_url = f"{series_url}/temporada-{season_number}"
         logger.info(f"[Worker {worker_id}] Verificando temporada {season_number}: {season_url}")
 
@@ -1267,7 +1296,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
 
     processed_urls = set(progress_data.get('processed_urls_odd', []))
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener datos de la cola con timeout
             try:
@@ -1345,7 +1374,7 @@ def worker6_db_processor(db_path, progress_data, worker_id=0):
 
     processed_urls = set(progress_data.get('processed_urls_even', []))
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener datos de la cola con timeout
             try:
@@ -1750,9 +1779,13 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
     except Exception as e:
         logger.critical(f"Error crítico en el procesamiento de series: {e}")
         logger.debug(traceback.format_exc())
-        stop_event.set()  # Señalizar a todos los workers que deben detenerse
+        shutdown_event.set()  # Señalizar a todos los workers que deben detenerse
 
     finally:
+        try:
+            save_progress(PROGRESS_FILE, progress_data)
+        except Exception:
+            pass
         # Asegurarse de que todos los drivers se cierren
         try:
             if 'driver_odd' in locals() and driver_odd:
@@ -1763,7 +1796,7 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
                 driver_worker2.quit()
             if 'driver_worker5' in locals() and driver_worker5:
                 driver_worker5.quit()
-        except:
+        except Exception:
             pass
 
 

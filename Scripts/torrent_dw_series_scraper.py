@@ -14,7 +14,9 @@ import urllib3
 
 #ver:1.05
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT
+from scraper_utils import PROJECT_ROOT, get_shutdown_event
+
+shutdown_event = get_shutdown_event()
 
 # Asegurarse de que existe el directorio de progreso
 progress_dir = os.path.join(PROJECT_ROOT, "progress")
@@ -453,7 +455,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
     consecutive_failures = 0
 
     try:
-        while True:
+        while not shutdown_event.is_set():
             series_url = f"{BASE_URL}{current_id}/{current_id}/"
             logger.info(f"Extrayendo: {series_url}")
 
@@ -499,6 +501,7 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
             current_id = next_id
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
+        shutdown_event.set()
     except Exception as e:
         logger.critical(f"Error crítico: {str(e)}")
     finally:
@@ -518,6 +521,11 @@ def main():
     except Exception as e:
         logger.critical(f"Error crítico en main: {str(e)}")
     finally:
+        try:
+            progress = load_progress()
+            save_progress(progress.get("current_id", 1), progress.get("total_saved", 0))
+        except Exception:
+            pass
         logger.info("Script finalizado")
 
 

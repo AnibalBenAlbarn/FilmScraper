@@ -6,6 +6,19 @@ import os
 import logging
 import smtplib
 import traceback
+import threading
+import signal
+
+try:  # pragma: no cover - dependencias opcionales para escuchar teclas
+    import msvcrt  # type: ignore
+except Exception:  # pragma: no cover
+    msvcrt = None
+
+try:  # pragma: no cover
+    import keyboard  # type: ignore
+except Exception:  # pragma: no cover
+    keyboard = None
+
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -57,6 +70,47 @@ CACHE = {
     'seasons': {},
     'episodes': {}
 }
+
+
+# Evento global y manejador para apagados controlados
+shutdown_event = threading.Event()
+
+
+class GracefulShutdown:
+    """Maneja señales y pulsaciones para detener procesos ordenadamente."""
+
+    def __init__(self):
+        signal.signal(signal.SIGINT, self._trigger)
+        signal.signal(signal.SIGTERM, self._trigger)
+
+        if msvcrt:  # pragma: no cover - específico de Windows
+            threading.Thread(target=self._listen_msvcrt, daemon=True).start()
+        elif keyboard:
+            try:
+                keyboard.add_hotkey('esc', self._trigger)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _trigger(*args, **kwargs):
+        shutdown_event.set()
+
+    @staticmethod
+    def _listen_msvcrt():  # pragma: no cover - requiere entorno interactivo
+        while not shutdown_event.is_set():
+            if msvcrt.kbhit() and msvcrt.getch() == b'\x1b':
+                shutdown_event.set()
+                break
+            time.sleep(0.1)
+
+
+def get_shutdown_event():
+    """Devuelve el evento de apagado para coordinación entre hilos."""
+    return shutdown_event
+
+
+# Instanciar para activar la captura de señales
+_graceful_shutdown = GracefulShutdown()
 
 
 def _load_config():

@@ -13,7 +13,9 @@ import urllib3
 
 #ver:1.05
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT
+from scraper_utils import PROJECT_ROOT, get_shutdown_event
+
+shutdown_event = get_shutdown_event()
 
 # Asegurarse de que existe el directorio de progreso
 progress_dir = os.path.join(PROJECT_ROOT, "progress")
@@ -367,6 +369,9 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
 
     try:
         for movie_id in range(current_id, end_id + 1):
+            if shutdown_event.is_set():
+                logger.info("Señal de apagado recibida. Saliendo del bucle de películas")
+                break
             movie_url = f"{BASE_URL}{movie_id}/"
             logger.info(f"Extrayendo: {movie_url}")
 
@@ -404,6 +409,7 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
 
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
+        shutdown_event.set()
     except Exception as e:
         logger.critical(f"Error crítico: {str(e)}")
     finally:
@@ -422,7 +428,13 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
+        shutdown_event.set()
     except Exception as e:
         logger.critical(f"Error crítico: {str(e)}")
     finally:
+        try:
+            progress = load_progress()
+            save_progress(progress.get("current_id", 1), progress.get("total_saved", 0))
+        except Exception:
+            pass
         logger.info("Script finalizado")
