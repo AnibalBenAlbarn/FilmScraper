@@ -372,40 +372,38 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
             if shutdown_event.is_set():
                 logger.info("Señal de apagado recibida. Saliendo del bucle de películas")
                 break
+
             movie_url = f"{BASE_URL}{movie_id}/"
             logger.info(f"Extrayendo: {movie_url}")
 
-            movie_data = get_movie_data(movie_url)
-            if movie_data:
-                if save_to_db(movie_data):
-                    logger.info(
-                        f"Guardado: {movie_data['title']} ({movie_data['year']}) - Calidad: {movie_data['quality']}")
-                    total_saved += 1
-                    consecutive_failures = 0  # Reiniciar contador de fallos
+            try:
+                movie_data = get_movie_data(movie_url)
+                if movie_data:
+                    if save_to_db(movie_data):
+                        logger.info(
+                            f"Guardado: {movie_data['title']} ({movie_data['year']}) - Calidad: {movie_data['quality']}")
+                        total_saved += 1
+                        consecutive_failures = 0
+                    else:
+                        logger.info(
+                            f"No guardado (posible duplicado): {movie_data['title']} - Calidad: {movie_data['quality']}")
                 else:
-                    logger.info(
-                        f"No guardado (posible duplicado): {movie_data['title']} - Calidad: {movie_data['quality']}")
-            else:
-                consecutive_failures += 1
-                logger.warning(
-                    f"Película no encontrada o datos incompletos para ID: {movie_id}. Fallos consecutivos: {consecutive_failures}")
+                    consecutive_failures += 1
+                    logger.warning(
+                        f"Película no encontrada o datos incompletos para ID: {movie_id}. Fallos consecutivos: {consecutive_failures}")
 
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.error(
-                        f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
-                    next_id = movie_id + 1
-                    break
-
-            # Calcular siguiente ID
-            next_id = movie_id + 1
-
-            # Guardar progreso cada película o cuando hay un error
-            if movie_id % 1 == 0 or movie_data is None:
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.error(
+                            f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
+                        next_id = movie_id + 1
+                        break
+            except Exception as e:
+                logger.error(f"Error al procesar película ID {movie_id}: {e}")
+            finally:
+                next_id = movie_id + 1
                 save_progress(next_id, total_saved)
-
-            # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
-            sleep_time = 1 + (movie_id % 2)
-            time.sleep(sleep_time)
+                sleep_time = 1 + (movie_id % 2)
+                time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")

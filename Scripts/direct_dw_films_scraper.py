@@ -8,7 +8,7 @@ import sys
 import argparse
 import concurrent.futures
 from datetime import datetime
-from queue import Queue
+from queue import Queue, Empty
 from threading import Lock
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -665,39 +665,39 @@ def movie_worker(worker_id):
                 logger.info(f"Worker {worker_id}: Señal de apagado recibida. Saliendo...")
                 break
             try:
-                # Obtener datos de película de la cola
-                page_num, index, movie_url, title = movie_queue.get(block=False)
+                page_num, index, movie_url, title = movie_queue.get(timeout=1)
+            except Empty:
+                if movie_queue.empty():
+                    logger.info(f"Worker {worker_id}: No hay más películas para procesar. Finalizando.")
+                    break
+                continue
 
-                logger.info(f"Worker {worker_id}: Procesando película {index} (página {page_num}): {movie_url}")
+            logger.info(f"Worker {worker_id}: Procesando película {index} (página {page_num}): {movie_url}")
+            success = False
+            movie_details = None
 
-                # Intentar extraer los detalles de la película con reintentos
-                success = False
-                movie_details = None
-
-                # Primer conjunto de 3 intentos
+            try:
                 for attempt in range(3):
                     try:
                         movie_details = extract_movie_details(driver, movie_url)
                         success = True
-                        break  # Salir del bucle de reintentos si tiene éxito
+                        break
                     except Exception as e:
                         logger.error(f"Worker {worker_id}: Error al extraer datos de la película {movie_url}: {e}")
                         if attempt < 2:
                             logger.info(f"Worker {worker_id}: Reintentando en 5 segundos... (Intento {attempt + 1}/3)")
                             time.sleep(5)
 
-                # Si después de 3 intentos no hay éxito, reiniciar el driver y probar 3 veces más
                 if not success:
                     logger.info(f"Worker {worker_id}: Reiniciando el driver después de 3 intentos fallidos...")
                     driver.quit()
                     driver = create_driver()
                     if login(driver):
-                        # Segundo conjunto de 3 intentos después de reiniciar el driver
                         for attempt in range(3):
                             try:
                                 movie_details = extract_movie_details(driver, movie_url)
                                 success = True
-                                break  # Salir del bucle de reintentos si tiene éxito
+                                break
                             except Exception as e:
                                 logger.error(
                                     f"Worker {worker_id}: Error al extraer datos de la película {movie_url} después de reiniciar: {e}")
@@ -708,30 +708,21 @@ def movie_worker(worker_id):
                     else:
                         logger.error(f"Worker {worker_id}: No se pudo iniciar sesión después de reiniciar el driver.")
 
-                # Si se obtuvieron los detalles de la película, insertarlos en la base de datos
                 if success and movie_details:
                     links = insert_data_into_db(movie_details)
                     if links:
                         with total_saved_lock:
                             total_saved += links
-                        save_progress(page_num, title, index, total_saved)
-
-                # Marcar la tarea como completada
-                movie_queue.task_done()
 
             except Exception as e:
-                if "queue.Empty" in str(e.__class__):
-                    # La cola está vacía, esperar un poco y volver a intentar
-                    time.sleep(1)
-                    # Si la cola sigue vacía después de esperar, salir del bucle
-                    if movie_queue.empty():
-                        logger.info(f"Worker {worker_id}: No hay más películas para procesar. Finalizando.")
-                        break
-                else:
-                    logger.error(f"Worker {worker_id}: Error inesperado: {e}")
-                    time.sleep(1)
+                logger.error(f"Worker {worker_id}: Error inesperado al procesar película: {e}")
+            finally:
+                with total_saved_lock:
+                    current_total = total_saved
+                movie_queue.task_done()
+                save_progress(page_num, title, index, current_total)
+
     finally:
-        # Cerrar el driver al finalizar
         driver.quit()
         logger.info(f"Worker {worker_id}: Finalizado y driver cerrado.")
 
@@ -828,9 +819,11 @@ def extract_all_movies(start_page=None, db_path=None):
                         break
             movie_queue.join()
 
-            # Cancelar los workers
+            if shutdown_event.is_set():
+                logger.info("Señal de apagado recibida. Esperando a que los workers finalicen las tareas en curso...")
+
             for worker in workers:
-                worker.cancel()
+                worker.result()
 
             logger.info("Todos los workers han finalizado.")
 
