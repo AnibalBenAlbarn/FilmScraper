@@ -16,7 +16,8 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 from scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
     save_progress, load_progress, clear_cache, movie_exists,
-    insert_or_update_movie, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT, insert_links_batch
+    insert_or_update_movie, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    insert_links_batch, is_url_completed, mark_url_completed
 )
 
 # Configuración específica para este script
@@ -486,7 +487,8 @@ def process_updated_movies(db_path=None):
             return []
 
         # Cargar progreso anterior
-        processed_urls = load_progress(PROGRESS_FILE, {}).get('processed_urls', [])
+        progress_data = load_progress(PROGRESS_FILE, {})
+        completed_urls = set(progress_data.get('completed_urls', []))
 
         # Obtener URLs de películas de la primera página
         movie_urls = get_movie_urls_from_page(UPDATED_MOVIES_URL, main_driver)
@@ -496,8 +498,8 @@ def process_updated_movies(db_path=None):
             logger.warning("No se encontraron películas actualizadas. Finalizando.")
             return []
 
-        # Filtrar URLs ya procesadas
-        new_urls = [url for url in movie_urls if url not in processed_urls]
+        # Filtrar URLs ya procesadas completamente
+        new_urls = [url for url in movie_urls if not is_url_completed(progress_data, url)]
         logger.info(f"Encontradas {len(new_urls)} películas nuevas para procesar")
 
         if not new_urls:
@@ -507,14 +509,12 @@ def process_updated_movies(db_path=None):
         # Procesar películas en paralelo
         processed_movies = process_movies_in_parallel(new_urls, db_path)
 
-        # Actualizar la lista de URLs procesadas
-        processed_urls.extend(new_urls)
-
-        # Guardar progreso
-        save_progress(PROGRESS_FILE, {
-            'processed_urls': processed_urls,
-            'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
+        # Marcar URLs completadas
+        for movie in processed_movies:
+            if movie.get('url'):
+                mark_url_completed(PROGRESS_FILE, progress_data, movie['url'])
+        progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_progress(PROGRESS_FILE, progress_data)
 
         # Registrar estadísticas
         stats = log_update_stats(start_time, processed_movies, db_path)

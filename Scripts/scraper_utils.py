@@ -384,6 +384,20 @@ def load_progress(progress_file, default=None):
         return default
 
 
+def is_url_completed(progress_data, url):
+    """Verifica si una URL ya fue procesada completamente."""
+    return url in set(progress_data.get('completed_urls', []))
+
+
+def mark_url_completed(progress_file, progress_data, url):
+    """Marca una URL como completada y guarda el progreso."""
+    completed = set(progress_data.get('completed_urls', []))
+    if url not in completed:
+        completed.add(url)
+        progress_data['completed_urls'] = list(completed)
+        save_progress(progress_file, progress_data)
+
+
 # Función para obtener o crear un servidor en la base de datos
 def get_or_create_server(server_name, connection=None, db_path=None):
     """Obtiene o crea un servidor en la base de datos."""

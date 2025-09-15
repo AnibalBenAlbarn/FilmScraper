@@ -20,7 +20,7 @@ progress_dir = os.path.join(PROJECT_ROOT, "progress")
 os.makedirs(progress_dir, exist_ok=True)
 
 # Archivo de progreso
-progress_file = os.path.join(PROJECT_ROOT, "progress", "torrent_movie_progress.json")
+progress_file = os.path.join(PROJECT_ROOT, "progress", "movies_torrent_progress.json")
 
 # Configure logging
 logging.basicConfig(

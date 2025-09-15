@@ -20,13 +20,13 @@ from scraper_utils import (
     save_progress, load_progress, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
     insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
-    log_link_insertion
+    log_link_insertion, is_url_completed
 )
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"
-PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
+PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", "update_series_premiere_progress.json")
 NEW_EPISODES_URL = f"{BASE_URL}/episodios#premiere"
 
 # Configurar logger
@@ -65,11 +65,15 @@ def worker1_url_extractor(driver, progress_data):
             logger.warning("Worker 1: No se encontraron episodios de estreno")
             return []
 
-        # Cargar URLs ya procesadas
+        # Cargar URLs ya completadas y procesadas en esta sesión
+        completed_urls = set(progress_data.get('completed_urls', []))
         processed_urls = set(progress_data.get('processed_urls', []))
 
-        # Filtrar URLs ya procesadas
-        new_urls = [url for url in episode_urls if url not in processed_urls]
+        # Filtrar URLs ya completadas o ya en proceso
+        new_urls = [
+            url for url in episode_urls
+            if url not in processed_urls and not is_url_completed(progress_data, url)
+        ]
         logger.info(f"Worker 1: Encontrados {len(new_urls)} episodios nuevos para procesar")
 
         # Guardar todas las URLs en un archivo JSON para referencia
@@ -83,7 +87,7 @@ def worker1_url_extractor(driver, progress_data):
             logger.debug(f"Worker 1: URL añadida a la cola: {url}")
 
         # Actualizar las URLs procesadas en el progreso
-        progress_data['processed_urls'] = list(set(progress_data.get('processed_urls', [])).union(new_urls))
+        progress_data['processed_urls'] = list(set(processed_urls).union(new_urls))
 
         return new_urls
     except Exception as e:
