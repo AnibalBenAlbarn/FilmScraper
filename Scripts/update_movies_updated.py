@@ -19,6 +19,7 @@ from scraper_utils import (
     insert_or_update_movie, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     insert_links_batch, is_url_completed, mark_url_completed
 )
+from graceful_shutdown import GracefulShutdown
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_movies_updated"
@@ -29,6 +30,10 @@ UPDATED_MOVIES_URL = f"{BASE_URL}/peliculas-actualizadas"
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
+
+# Inicializar manejo de apagado
+shutdown = GracefulShutdown()
+shutdown_event = shutdown.shutdown_event
 
 # Manejador de drivers por hilo para evitar múltiples inicios de sesión
 _thread_local = threading.local()
@@ -322,8 +327,10 @@ def extract_movie_details(movie_url, worker_id=0, db_path=None):
 
 
 # Función para procesar una película con reintentos
-def process_movie_with_retries(movie_url, worker_id, db_path=None):
+def process_movie_with_retries(movie_url, worker_id, db_path=None, shutdown_event=None):
     for attempt in range(MAX_RETRIES):
+        if shutdown_event and shutdown_event.is_set():
+            return None
         try:
             return extract_movie_details(movie_url, worker_id, db_path)
         except Exception as e:
@@ -338,30 +345,36 @@ def process_movie_with_retries(movie_url, worker_id, db_path=None):
 
 
 # Función para procesar películas en paralelo
-def process_movies_in_parallel(movie_urls, db_path=None):
+def process_movies_in_parallel(movie_urls, db_path=None, shutdown_event=None):
     logger.info(f"Procesando {len(movie_urls)} películas en paralelo con {MAX_WORKERS} workers")
     results = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Crear un diccionario de futuros/tareas
-        future_to_url = {
-            executor.submit(process_movie_with_retries, url, i % MAX_WORKERS, db_path): url
-            for i, url in enumerate(movie_urls)
-        }
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Crear un diccionario de futuros/tareas
+            future_to_url = {}
+            for i, url in enumerate(movie_urls):
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                future = executor.submit(process_movie_with_retries, url, i % MAX_WORKERS, db_path, shutdown_event)
+                future_to_url[future] = url
 
-        # Procesar los resultados a medida que se completan
-        for future in concurrent.futures.as_completed(future_to_url):
-            url = future_to_url[future]
-            try:
-                movie_data = future.result()
-                if movie_data:
-                    results.append(movie_data)
-                    logger.info(f"Película actualizada procesada correctamente: {url}")
-            except Exception as e:
-                logger.error(f"Error al procesar la película actualizada {url}: {e}")
-                logger.debug(traceback.format_exc())
+            # Procesar los resultados a medida que se completan
+            for future in concurrent.futures.as_completed(future_to_url):
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                url = future_to_url[future]
+                try:
+                    movie_data = future.result()
+                    if movie_data:
+                        results.append(movie_data)
+                        logger.info(f"Película actualizada procesada correctamente: {url}")
+                except Exception as e:
+                    logger.error(f"Error al procesar la película actualizada {url}: {e}")
+                    logger.debug(traceback.format_exc())
+    finally:
+        close_all_drivers()
 
-    close_all_drivers()
     return results
 
 
@@ -470,6 +483,8 @@ def process_updated_movies(db_path=None):
     start_time = datetime.now()
     logger.info(f"Iniciando procesamiento de películas actualizadas: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    progress_data = {}
+    main_driver = None
     try:
         # Configurar la base de datos
         setup_database(logger, db_path)
@@ -493,6 +508,7 @@ def process_updated_movies(db_path=None):
         # Obtener URLs de películas de la primera página
         movie_urls = get_movie_urls_from_page(UPDATED_MOVIES_URL, main_driver)
         main_driver.quit()
+        main_driver = None
 
         if not movie_urls:
             logger.warning("No se encontraron películas actualizadas. Finalizando.")
@@ -507,10 +523,12 @@ def process_updated_movies(db_path=None):
             return []
 
         # Procesar películas en paralelo
-        processed_movies = process_movies_in_parallel(new_urls, db_path)
+        processed_movies = process_movies_in_parallel(new_urls, db_path, shutdown_event)
 
         # Marcar URLs completadas
         for movie in processed_movies:
+            if shutdown_event.is_set():
+                break
             if movie.get('url'):
                 mark_url_completed(PROGRESS_FILE, progress_data, movie['url'])
         progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -530,6 +548,13 @@ def process_updated_movies(db_path=None):
         logger.critical(f"Error crítico en el procesamiento de películas actualizadas: {e}")
         logger.debug(traceback.format_exc())
         return []
+    finally:
+        if main_driver:
+            try:
+                main_driver.quit()
+            except Exception:
+                pass
+        save_progress(PROGRESS_FILE, progress_data)
 
 
 # Punto de entrada principal

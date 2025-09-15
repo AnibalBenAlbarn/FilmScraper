@@ -11,6 +11,7 @@ from scraper_utils import (
 
 # Reutilizamos funciones del script de películas actualizadas
 import update_movies_updated as movies_updated
+from graceful_shutdown import GracefulShutdown
 
 SCRIPT_NAME = "update_movies_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"
@@ -21,11 +22,16 @@ PREMIERE_MOVIES_URL = f"{BASE_URL}/peliculas#premiere"
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 movies_updated.logger = logger
 
+shutdown = GracefulShutdown()
+shutdown_event = shutdown.shutdown_event
+
 def process_premiere_movies(db_path=None):
     """Procesa las películas de estreno obteniendo enlaces y actualizando la BD."""
     start_time = datetime.now()
     logger.info(
         f"Iniciando procesamiento de películas de estreno: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    progress_data = {}
+    main_driver = None
     try:
         setup_database(logger, db_path)
         clear_cache()
@@ -40,6 +46,7 @@ def process_premiere_movies(db_path=None):
         completed_urls = set(progress_data.get('completed_urls', []))
         movie_urls = movies_updated.get_movie_urls_from_page(PREMIERE_MOVIES_URL, main_driver)
         main_driver.quit()
+        main_driver = None
 
         if not movie_urls:
             logger.warning("No se encontraron películas de estreno. Finalizando.")
@@ -51,8 +58,10 @@ def process_premiere_movies(db_path=None):
             logger.info("No hay películas nuevas para procesar. Finalizando.")
             return []
 
-        processed_movies = movies_updated.process_movies_in_parallel(new_urls, db_path)
+        processed_movies = movies_updated.process_movies_in_parallel(new_urls, db_path, shutdown_event)
         for movie in processed_movies:
+            if shutdown_event.is_set():
+                break
             if movie.get('url'):
                 mark_url_completed(PROGRESS_FILE, progress_data, movie['url'])
         progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -70,6 +79,12 @@ def process_premiere_movies(db_path=None):
         logger.debug(traceback.format_exc())
         return []
     finally:
+        if main_driver:
+            try:
+                main_driver.quit()
+            except Exception:
+                pass
+        save_progress(PROGRESS_FILE, progress_data)
         movies_updated.close_all_drivers()
 
 

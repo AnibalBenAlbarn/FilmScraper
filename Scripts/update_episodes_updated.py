@@ -21,6 +21,7 @@ from scraper_utils import (
     insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     is_url_completed, mark_url_completed
 )
+from graceful_shutdown import GracefulShutdown
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_updated"
@@ -31,6 +32,10 @@ UPDATED_EPISODES_URL = f"{BASE_URL}/episodios#updated"
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
+
+# Inicializar manejo de apagado
+shutdown = GracefulShutdown()
+shutdown_event = shutdown.shutdown_event
 
 # Manejador de drivers por hilo para evitar múltiples inicios de sesión
 _thread_local = threading.local()
@@ -439,8 +444,10 @@ def extract_episode_links(driver, episode_id):
 
 
 # Función para procesar un episodio con reintentos
-def process_episode_with_retries(episode_url, worker_id, db_path=None):
+def process_episode_with_retries(episode_url, worker_id, db_path=None, shutdown_event=None):
     for attempt in range(MAX_RETRIES):
+        if shutdown_event and shutdown_event.is_set():
+            return None
         try:
             return extract_episode_details(episode_url, worker_id, db_path)
         except Exception as e:
@@ -455,30 +462,36 @@ def process_episode_with_retries(episode_url, worker_id, db_path=None):
 
 
 # Función para procesar episodios en paralelo
-def process_episodes_in_parallel(episode_urls, db_path=None):
+def process_episodes_in_parallel(episode_urls, db_path=None, shutdown_event=None):
     logger.info(f"Procesando {len(episode_urls)} episodios actualizados en paralelo con {MAX_WORKERS} workers")
     results = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Crear un diccionario de futuros/tareas
-        future_to_url = {
-            executor.submit(process_episode_with_retries, url, i % MAX_WORKERS, db_path): url
-            for i, url in enumerate(episode_urls)
-        }
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Crear un diccionario de futuros/tareas
+            future_to_url = {}
+            for i, url in enumerate(episode_urls):
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                future = executor.submit(process_episode_with_retries, url, i % MAX_WORKERS, db_path, shutdown_event)
+                future_to_url[future] = url
 
-        # Procesar los resultados a medida que se completan
-        for future in concurrent.futures.as_completed(future_to_url):
-            url = future_to_url[future]
-            try:
-                episode_data = future.result()
-                if episode_data:
-                    results.append(episode_data)
-                    logger.info(f"Episodio actualizado procesado correctamente: {url}")
-            except Exception as e:
-                logger.error(f"Error al procesar el episodio actualizado {url}: {e}")
-                logger.debug(traceback.format_exc())
+            # Procesar los resultados a medida que se completan
+            for future in concurrent.futures.as_completed(future_to_url):
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                url = future_to_url[future]
+                try:
+                    episode_data = future.result()
+                    if episode_data:
+                        results.append(episode_data)
+                        logger.info(f"Episodio actualizado procesado correctamente: {url}")
+                except Exception as e:
+                    logger.error(f"Error al procesar el episodio actualizado {url}: {e}")
+                    logger.debug(traceback.format_exc())
+    finally:
+        close_all_drivers()
 
-    close_all_drivers()
     return results
 
 
@@ -628,6 +641,8 @@ def process_updated_episodes(db_path=None):
     start_time = datetime.now()
     logger.info(f"Iniciando actualización de episodios actualizados: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    progress_data = {}
+    main_driver = None
     try:
         # Configurar la base de datos
         setup_database(logger, db_path)
@@ -645,6 +660,7 @@ def process_updated_episodes(db_path=None):
         # Obtener URLs de episodios actualizados
         episode_urls = get_episode_urls_from_updated_page(main_driver)
         main_driver.quit()
+        main_driver = None
 
         if not episode_urls:
             logger.warning("No se encontraron episodios actualizados. Finalizando.")
@@ -663,10 +679,12 @@ def process_updated_episodes(db_path=None):
             return []
 
         # Procesar episodios en paralelo
-        processed_episodes = process_episodes_in_parallel(new_urls, db_path)
+        processed_episodes = process_episodes_in_parallel(new_urls, db_path, shutdown_event)
 
         # Marcar URLs completadas
         for ep in processed_episodes:
+            if shutdown_event.is_set():
+                break
             if ep.get('url'):
                 mark_url_completed(PROGRESS_FILE, progress_data, ep['url'])
         progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -686,6 +704,13 @@ def process_updated_episodes(db_path=None):
         logger.critical(f"Error crítico en la actualización de episodios actualizados: {e}")
         logger.debug(traceback.format_exc())
         return []
+    finally:
+        if main_driver:
+            try:
+                main_driver.quit()
+            except Exception:
+                pass
+        save_progress(PROGRESS_FILE, progress_data)
 
 
 # Punto de entrada principal
