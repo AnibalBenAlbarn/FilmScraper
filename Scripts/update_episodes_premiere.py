@@ -27,7 +27,7 @@ from scraper_utils import (
 SCRIPT_NAME = "update_episodes_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
-NEW_EPISODES_URL = f"{BASE_URL}/episodios#premiere"
+LATEST_EPISODES_URL = f"{BASE_URL}/episodios#latest"
 
 # Configurar logger
 logger = setup_logger(SCRIPT_NAME, LOG_FILE)
@@ -118,78 +118,50 @@ def save_urls_to_json(all_urls, new_urls):
 def get_episode_urls_from_premiere_page(driver):
     logger.info("Obteniendo URLs de episodios de estreno...")
     try:
-        driver.get(NEW_EPISODES_URL)
-        time.sleep(3)  # Esperar a que se cargue la página y el contenido dinámico
-
-        # Hacer clic en la pestaña "Estrenos" si es necesario
-        try:
-            premiere_tab = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Estrenos')]"))
-            )
-            premiere_tab.click()
-            time.sleep(2)  # Esperar a que se cargue el contenido
-        except Exception as e:
-            logger.warning(f"No se pudo hacer clic en la pestaña 'Estrenos': {e}")
-            # Continuamos de todos modos, ya que podríamos estar ya en la pestaña correcta
-
-        # Esperar a que aparezca el contenedor de episodios
+        driver.get(LATEST_EPISODES_URL)
+        time.sleep(3)
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "episodes-content"))
             )
-        except TimeoutException:
-            logger.error("Timeout esperando el contenedor de episodios")
+        except Exception as e:
+            logger.error(f"Timeout esperando el contenedor de episodios: {e}")
             return []
 
-        # Obtener todos los episodios con scroll infinito
         episode_urls = []
         last_count = 0
         no_new_results_count = 0
-        max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
-        max_scroll_attempts = 50  # Límite de scroll para evitar bucles infinitos
 
-        # Conjunto para evitar duplicados
+        max_no_new_results = 5
+        max_scroll_attempts = 50
         seen_urls = set()
-
         scroll_attempt = 0
-        # Bucle para hacer scroll hasta que no haya más episodios
         while scroll_attempt < max_scroll_attempts:
-            # Obtener los episodios actuales
-            episode_divs = driver.find_elements(By.CSS_SELECTOR, "#episodes-content .span-6.tt.view.show-view")
+            page_source = driver.page_source
+            soup = BeautifulSoup(page_source, "html.parser")
+            episode_divs = soup.find_all("div", class_="span-6 tt view show-view")
+            for episode_div in episode_divs:
+                link_tag = episode_div.find("a", href=re.compile(r"/episodio/"))
+                if link_tag:
+                    episode_href = link_tag['href']
+                    episode_url = BASE_URL + episode_href if not episode_href.startswith('http') else episode_href
+                    if episode_url not in seen_urls:
+                        episode_urls.append(episode_url)
+                        seen_urls.add(episode_url)
 
-            # Procesar los episodios visibles actualmente
-            for div in episode_divs:
-                try:
-                    link_tag = div.find_element(By.TAG_NAME, "a")
-                    episode_href = link_tag.get_attribute("href")
-
-                    # Añadir solo si no lo hemos visto antes
-                    if episode_href and episode_href not in seen_urls:
-                        episode_urls.append(episode_href)
-                        seen_urls.add(episode_href)
-                except Exception as e:
-                    logger.warning(f"Error al procesar un div de episodio: {e}")
-
-            # Verificar si se encontraron nuevos episodios
             if len(episode_urls) == last_count:
                 no_new_results_count += 1
-                if no_new_results_count >= max_no_new_results:  # Si no hay nuevos resultados después de varios intentos, terminar
-                    logger.info(
-                        f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
+                if no_new_results_count >= max_no_new_results:
+                    logger.info(f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
                     break
             else:
-                no_new_results_count = 0  # Reiniciar contador si se encontraron nuevos episodios
+                no_new_results_count = 0
                 last_count = len(episode_urls)
-
-            # Hacer scroll hacia abajo
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            logger.debug(
-                f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
 
-            # Esperar a que se carguen más contenidos
+            logger.debug(f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
             time.sleep(1)
             scroll_attempt += 1
-
         if scroll_attempt >= max_scroll_attempts:
             logger.info(f"Se alcanzó el límite de {max_scroll_attempts} scrolls, finalizando.")
 
@@ -199,6 +171,7 @@ def get_episode_urls_from_premiere_page(driver):
         logger.error(f"Error al obtener URLs de episodios de estreno: {e}")
         logger.debug(traceback.format_exc())
         return []
+
 
 
 # Worker 2: Verifica en BD y obtiene datos de la serie
