@@ -63,56 +63,74 @@ def get_episode_urls_from_updated_page(driver):
     logger.info("Obteniendo URLs de episodios actualizados...")
     try:
         driver.get(UPDATED_EPISODES_URL)
+        time.sleep(3)  # Esperar a que se cargue la página y el contenido dinámico
 
-        # Esperar a que el contenedor de episodios esté disponible en lugar de usar un sleep fijo
+        # Hacer clic en la pestaña "Actualizados" si es necesario
+        try:
+            updated_tab = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Actualizados')]"))
+            )
+            updated_tab.click()
+            time.sleep(2)  # Esperar a que se cargue el contenido
+        except Exception as e:
+            logger.warning(f"No se pudo hacer clic en la pestaña 'Actualizados': {e}")
+
+        # Esperar a que aparezca el contenedor de episodios
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "episodes-content"))
             )
-        except Exception as e:
-            logger.error(f"Timeout esperando el contenedor de episodios: {e}")
+        except TimeoutException:
+            logger.error("Timeout esperando el contenedor de episodios")
             return []
 
+        # Obtener todos los episodios con scroll infinito
         episode_urls = []
         last_count = 0
-        no_new_results = 0
-        max_no_new_results = 3  # Número máximo de intentos sin nuevos resultados antes de parar
+        no_new_results_count = 0
+        max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
         max_scroll_attempts = 50  # Límite de scroll para evitar bucles infinitos
 
+        # Conjunto para evitar duplicados
         seen_urls = set()
+
         scroll_attempt = 0
+        # Bucle para hacer scroll hasta que no haya más episodios
+        while scroll_attempt < max_scroll_attempts:
+            # Obtener los episodios actuales
+            episode_divs = driver.find_elements(By.CSS_SELECTOR, "#episodes-content .span-6.tt.view.show-view")
 
-        while scroll_attempt < max_scroll_attempts and no_new_results < max_no_new_results:
-            episode_divs = driver.find_elements(By.CSS_SELECTOR, "div.span-6.tt.view.show-view")
-            for episode_div in episode_divs:
+            # Procesar los episodios visibles actualmente
+            for div in episode_divs:
                 try:
-                    link_tag = episode_div.find_element(By.CSS_SELECTOR, "a[href*='/episodio/']")
-                    episode_url = link_tag.get_attribute('href')
-                    if not episode_url.startswith('http'):
-                        episode_url = BASE_URL + episode_url
-                    if episode_url not in seen_urls:
-                        episode_urls.append(episode_url)
-                        seen_urls.add(episode_url)
-                except Exception:
-                    continue
+                    link_tag = div.find_element(By.TAG_NAME, "a")
+                    episode_href = link_tag.get_attribute("href")
 
+                    # Añadir solo si no lo hemos visto antes
+                    if episode_href and episode_href not in seen_urls:
+                        episode_urls.append(episode_href)
+                        seen_urls.add(episode_href)
+                except Exception as e:
+                    logger.warning(f"Error al procesar un div de episodio: {e}")
+
+            # Verificar si se encontraron nuevos episodios
             if len(episode_urls) == last_count:
-                no_new_results += 1
+                no_new_results_count += 1
+                if no_new_results_count >= max_no_new_results:
+                    logger.info(
+                        f"No se encontraron nuevos episodios después de {no_new_results_count} intentos. Terminando scroll.")
+                    break
             else:
-                no_new_results = 0
+                no_new_results_count = 0
                 last_count = len(episode_urls)
 
+            # Hacer scroll hacia abajo
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             logger.debug(
                 f"Scroll {scroll_attempt + 1}/{max_scroll_attempts}: {len(episode_urls)} episodios encontrados")
 
-            try:
-                WebDriverWait(driver, 2).until(
-                    lambda d: len(d.find_elements(By.CSS_SELECTOR, "div.span-6.tt.view.show-view")) > last_count
-                )
-            except TimeoutException:
-                pass
-
+            # Esperar a que se carguen más contenidos
+            time.sleep(1)
             scroll_attempt += 1
 
         if scroll_attempt >= max_scroll_attempts:
