@@ -18,13 +18,14 @@ from scraper_utils import (
     save_progress, load_progress, extract_links,
     insert_links_batch, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
+    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    is_url_completed, mark_url_completed
 )
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_updated"
 LOG_FILE = f"{SCRIPT_NAME}.log"
-PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
+PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", "update_series_updated_progress.json")
 UPDATED_EPISODES_URL = f"{BASE_URL}/episodios#updated"
 
 # Configurar logger
@@ -325,7 +326,8 @@ def extract_episode_details(episode_url, worker_id=0, db_path=None):
                 "new_links_count": new_links_count,
                 "is_new_series": is_new_series,
                 "is_new_season": is_new_season,
-                "is_new_episode": is_new_episode
+                "is_new_episode": is_new_episode,
+                "url": episode_url
             }
         except Exception as e:
             logger.error(f"[Worker {worker_id}] Error al procesar el episodio: {e}")
@@ -649,10 +651,11 @@ def process_updated_episodes(db_path=None):
             return []
 
         # Cargar progreso anterior
-        processed_urls = load_progress(PROGRESS_FILE, {}).get('processed_urls', [])
+        progress_data = load_progress(PROGRESS_FILE, {})
+        completed_urls = set(progress_data.get('completed_urls', []))
 
-        # Filtrar URLs ya procesadas
-        new_urls = [url for url in episode_urls if url not in processed_urls]
+        # Filtrar URLs ya procesadas completamente
+        new_urls = [url for url in episode_urls if not is_url_completed(progress_data, url)]
         logger.info(f"Encontrados {len(new_urls)} episodios nuevos para procesar")
 
         if not new_urls:
@@ -662,14 +665,12 @@ def process_updated_episodes(db_path=None):
         # Procesar episodios en paralelo
         processed_episodes = process_episodes_in_parallel(new_urls, db_path)
 
-        # Actualizar la lista de URLs procesadas
-        processed_urls.extend(new_urls)
-
-        # Guardar progreso
-        save_progress(PROGRESS_FILE, {
-            'processed_urls': processed_urls,
-            'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
+        # Marcar URLs completadas
+        for ep in processed_episodes:
+            if ep.get('url'):
+                mark_url_completed(PROGRESS_FILE, progress_data, ep['url'])
+        progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_progress(PROGRESS_FILE, progress_data)
 
         # Registrar estadísticas
         stats = log_update_stats(start_time, processed_episodes, db_path)

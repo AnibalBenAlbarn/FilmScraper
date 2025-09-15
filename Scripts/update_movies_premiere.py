@@ -6,7 +6,7 @@ from datetime import datetime
 from scraper_utils import (
     setup_logger, create_driver, login, setup_database,
     save_progress, load_progress, clear_cache,
-    BASE_URL, PROJECT_ROOT
+    BASE_URL, PROJECT_ROOT, is_url_completed, mark_url_completed
 )
 
 # Reutilizamos funciones del script de películas actualizadas
@@ -36,7 +36,8 @@ def process_premiere_movies(db_path=None):
             main_driver.quit()
             return []
 
-        processed_urls = load_progress(PROGRESS_FILE, {}).get('processed_urls', [])
+        progress_data = load_progress(PROGRESS_FILE, {})
+        completed_urls = set(progress_data.get('completed_urls', []))
         movie_urls = movies_updated.get_movie_urls_from_page(PREMIERE_MOVIES_URL, main_driver)
         main_driver.quit()
 
@@ -44,19 +45,18 @@ def process_premiere_movies(db_path=None):
             logger.warning("No se encontraron películas de estreno. Finalizando.")
             return []
 
-        new_urls = [url for url in movie_urls if url not in processed_urls]
+        new_urls = [url for url in movie_urls if not is_url_completed(progress_data, url)]
         logger.info(f"Encontradas {len(new_urls)} películas nuevas para procesar")
         if not new_urls:
             logger.info("No hay películas nuevas para procesar. Finalizando.")
             return []
 
         processed_movies = movies_updated.process_movies_in_parallel(new_urls, db_path)
-        processed_urls.extend(new_urls)
-
-        save_progress(PROGRESS_FILE, {
-            'processed_urls': processed_urls,
-            'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
+        for movie in processed_movies:
+            if movie.get('url'):
+                mark_url_completed(PROGRESS_FILE, progress_data, movie['url'])
+        progress_data['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        save_progress(PROGRESS_FILE, progress_data)
 
         movies_updated.log_update_stats(start_time, processed_movies, db_path)
         report = movies_updated.generate_update_report(start_time, processed_movies)

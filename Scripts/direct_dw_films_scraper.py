@@ -55,7 +55,7 @@ if not os.path.exists(progress_dir):
     os.makedirs(progress_dir)
 
 # Archivo para guardar el progreso
-progress_file = os.path.join(progress_dir, "movie_progress.json")
+progress_file = os.path.join(progress_dir, "movies_direct_progress.json")
 
 # Ruta de la base de datos (usando configuración compartida)
 db_path = DB_PATH

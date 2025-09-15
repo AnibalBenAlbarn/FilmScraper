@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover - fallback when executed directly
 # Configuración específica para este script
 SCRIPT_NAME = "direct_dw_series_scraper"
 LOG_FILE = f"{SCRIPT_NAME}.log"
-PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", f"{SCRIPT_NAME}_progress.json")
+PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", "series_direct_progress.json")
 SERIES_BASE_URL = f"{BASE_URL}/series/imdb_rating"
 
 # Obtener total de enlaces guardados para un tipo de media
