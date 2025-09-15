@@ -22,6 +22,7 @@ from scraper_utils import (
     insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     log_link_insertion, is_url_completed
 )
+from graceful_shutdown import GracefulShutdown
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_premiere"
@@ -38,7 +39,8 @@ metadata_queue = Queue()  # Worker 2 -> Worker 3
 links_queue = Queue()  # Worker 3 -> Worker 4
 
 # Evento para señalizar parada
-stop_event = threading.Event()
+shutdown = GracefulShutdown()
+shutdown_event = shutdown.shutdown_event
 
 # Contadores para estadísticas
 stats = {
@@ -81,7 +83,7 @@ def worker1_url_extractor(driver, progress_data):
 
         # Poner las URLs en la cola para el Worker 2
         for url in new_urls:
-            if stop_event.is_set():
+            if shutdown_event.is_set():
                 break
             url_queue.put(url)
             logger.debug(f"Worker 1: URL añadida a la cola: {url}")
@@ -209,7 +211,7 @@ def get_episode_urls_from_premiere_page(driver):
 def worker2_metadata_extractor(driver, db_path, worker_id=0):
     logger.info(f"Worker 2 (ID {worker_id}): Iniciando extracción de metadatos")
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener una URL de la cola con timeout
             try:
@@ -465,7 +467,7 @@ def extract_episode_details(driver, episode_url, worker_id=0, db_path=None):
 def worker3_link_extractor(driver, worker_id=0):
     logger.info(f"Worker 3 (ID {worker_id}): Iniciando extracción de enlaces")
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener datos de la cola con timeout
             try:
@@ -617,7 +619,7 @@ def worker4_db_inserter(db_path, progress_data, worker_id=0):
 
     completed_urls = set(progress_data.get('completed_urls', []))
 
-    while not stop_event.is_set():
+    while not shutdown_event.is_set():
         try:
             # Obtener datos de la cola con timeout
             try:
@@ -892,6 +894,11 @@ def log_update_stats(start_time, db_path=None):
 def process_premiere_episodes(db_path=None):
     start_time = datetime.now()
     logger.info(f"Iniciando actualización de episodios de estreno: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    progress_data = {}
+    main_driver = None
+    worker2_drivers = []
+    worker3_drivers = []
+    threads = []
 
     try:
         # Configurar la base de datos
@@ -920,10 +927,6 @@ def process_premiere_episodes(db_path=None):
             main_driver.quit()
             return []
 
-        # Crear drivers para los workers 2, 3 y 4
-        worker2_drivers = []
-        worker3_drivers = []
-
         # Crear y configurar drivers para Worker 2 (2 instancias)
         for i in range(2):
             driver = create_driver()
@@ -943,7 +946,6 @@ def process_premiere_episodes(db_path=None):
             driver.quit()
 
         # Iniciar workers en hilos separados
-        threads = []
 
         # Iniciar Worker 2 (Verificador)
         for i, driver in enumerate(worker2_drivers):
@@ -978,17 +980,6 @@ def process_premiere_episodes(db_path=None):
         for thread in threads:
             thread.join()
 
-        # Cerrar todos los drivers
-        main_driver.quit()
-        for driver in worker2_drivers + worker3_drivers:
-            driver.quit()
-
-        # Guardar progreso final
-        save_progress(PROGRESS_FILE, progress_data)
-
-        # Registrar estadísticas
-        log_update_stats(start_time, db_path)
-
         # Generar informe
         processed_episodes = []  # Aquí deberías recopilar los episodios procesados
         report = generate_update_report(start_time, processed_episodes)
@@ -1000,6 +991,19 @@ def process_premiere_episodes(db_path=None):
         logger.critical(f"Error crítico en la actualización de episodios de estreno: {e}")
         logger.debug(traceback.format_exc())
         return []
+    finally:
+        if main_driver:
+            try:
+                main_driver.quit()
+            except Exception:
+                pass
+        for driver in worker2_drivers + worker3_drivers:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        save_progress(PROGRESS_FILE, progress_data)
+        log_update_stats(start_time, db_path)
 
 
 # Punto de entrada principal
