@@ -5,7 +5,9 @@ import json
 import os
 import logging
 import sys
+import argparse
 import concurrent.futures
+from datetime import datetime
 from queue import Queue
 from threading import Lock
 from selenium import webdriver
@@ -16,39 +18,19 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from bs4 import BeautifulSoup
 
-# Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, log_link_insertion
+
+try:  # pragma: no cover - compatible al ejecutarse como script o módulo
+    from .scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
+except ImportError:  # pragma: no cover
+    from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
+    
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Configuración del logger para evitar duplicación
-logger = logging.getLogger("films_scraper")
-logger.setLevel(logging.DEBUG)
-logger.propagate = False  # Importante para evitar duplicación
 
-# Limpiar handlers previos
-if logger.handlers:
-    logger.handlers.clear()
-
-# Asegurar que el directorio de logs existe
-logs_dir = os.path.join(PROJECT_ROOT, "logs")
-if not os.path.exists(logs_dir):
-    os.makedirs(logs_dir)
-
-# Handler para consola con salida a stdout
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.DEBUG)
-
-# Handler para archivo
-file_handler = logging.FileHandler(os.path.join(logs_dir, "direct_scraper_films.log"))
-file_handler.setLevel(logging.INFO)
-
-# Formato único para ambos handlers
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
-console_handler.setFormatter(formatter)
-file_handler.setFormatter(formatter)
-
-logger.addHandler(console_handler)
-logger.addHandler(file_handler)
+# Configuración del logger homogéneo
+SCRIPT_NAME = "direct_dw_films_scraper"
+LOG_FILE = f"{SCRIPT_NAME}.log"
+logger = setup_logger(SCRIPT_NAME, LOG_FILE)
 
 
 # Redirigir excepciones no capturadas
@@ -76,11 +58,6 @@ if not os.path.exists(progress_dir):
 progress_file = os.path.join(progress_dir, "movie_progress.json")
 
 # Ruta de la base de datos (usando configuración compartida)
-try:  # pragma: no cover - compatible al ejecutarse como script o módulo
-    from .scraper_utils import DB_PATH
-except ImportError:  # pragma: no cover
-    from scraper_utils import DB_PATH
-
 db_path = DB_PATH
 
 
@@ -146,9 +123,13 @@ def create_driver():
 
 
 # Función para inicializar la base de datos
-def initialize_db():
+def initialize_db(path=None):
+    global db_path
     with db_lock:
         try:
+            if path:
+                db_path = path
+            logger.debug(f"Iniciando configuración de la base de datos en: {db_path}")
             connection = sqlite3.connect(db_path)
             cursor = connection.cursor()
 
@@ -227,10 +208,10 @@ def initialize_db():
             ''')
 
             connection.commit()
-            logger.info("Base de datos inicializada correctamente")
+            logger.info("Base de datos configurada correctamente")
             return True
         except Exception as e:
-            logger.error(f"Error al inicializar la base de datos: {e}")
+            logger.error(f"Error al configurar la base de datos: {e}")
             return False
         finally:
             if connection:
@@ -240,6 +221,7 @@ def initialize_db():
 # Función para conectar a la base de datos
 def connect_db():
     try:
+        logger.debug(f"Conectando a la base de datos en: {db_path}")
         connection = sqlite3.connect(db_path)
         connection.row_factory = sqlite3.Row
         logger.debug("Conexión a la base de datos establecida correctamente")
@@ -734,9 +716,11 @@ def movie_worker(worker_id):
 
 
 # Función principal para extraer todas las páginas de películas
-def extract_all_movies():
-    # Inicializar la base de datos si es necesario
-    initialize_db()
+def extract_all_movies(start_page=None, db_path=None):
+    start_time = datetime.now()
+    logger.info(f"Iniciando procesamiento de películas: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    # Inicializar la base de datos
+    initialize_db(db_path)
 
     # Crear un driver principal para la navegación por páginas
     main_driver = create_driver()
@@ -757,6 +741,10 @@ def extract_all_movies():
     # Cargar el progreso guardado
     global total_saved
     page_number, last_title, last_index, total_saved_local = load_progress()
+    if start_page is not None:
+        page_number = start_page
+        last_title = None
+        last_index = -1
     with total_saved_lock:
         total_saved = total_saved_local
     logger.info(f"Enlaces guardados previamente: {total_saved}")
@@ -825,6 +813,11 @@ def extract_all_movies():
 
 # Punto de entrada principal
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Procesamiento de películas por rating IMDB')
+    parser.add_argument('--start-page', type=int, help='Página inicial para comenzar el procesamiento')
+    parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')
+    args = parser.parse_args()
+
     try:
         logger.info("Iniciando el scraper de películas con procesamiento paralelo...")
         # Verificar si estamos en un reinicio
@@ -836,7 +829,7 @@ if __name__ == "__main__":
                     logger.info(f"Reinicio detectado. Contador de reinicios: {restart_count}/{MAX_RESTARTS}")
 
         # Ejecutar la extracción de todas las películas
-        extract_all_movies()
+        extract_all_movies(args.start_page, args.db_path)
         logger.info("Proceso de scraping de películas completado.")
     except Exception as e:
         logger.critical(f"Error crítico en el scraper: {e}")
