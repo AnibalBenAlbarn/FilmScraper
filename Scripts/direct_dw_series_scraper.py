@@ -1297,7 +1297,7 @@ def worker3_db_processor(db_path, progress_data, worker_id=0):
                 logger.info(f"Worker 3 (ID {worker_id}): Procesando serie en BD: {series_url}")
 
                 with db_lock:
-                    result = save_series_to_db(series_data, series_exists, db_path)
+                    result = save_series_to_db(series_data, series_exists, db_path, progress_data)
 
                 if result:
                     logger.info(f"Worker 3 (ID {worker_id}): Serie guardada correctamente: {series_url}")
@@ -1366,7 +1366,7 @@ def worker6_db_processor(db_path, progress_data, worker_id=0):
                 logger.info(f"Worker 6 (ID {worker_id}): Procesando serie en BD: {series_url}")
 
                 with db_lock:
-                    result = save_series_to_db(series_data, series_exists, db_path)
+                    result = save_series_to_db(series_data, series_exists, db_path, progress_data)
 
                 if result:
                     logger.info(f"Worker 6 (ID {worker_id}): Serie guardada correctamente: {series_url}")
@@ -1407,10 +1407,12 @@ def worker6_db_processor(db_path, progress_data, worker_id=0):
 
 
 # Función para guardar una serie en la base de datos
-def save_series_to_db(series_data, series_exists=False, db_path=None):
+def save_series_to_db(series_data, series_exists=False, db_path=None, progress_data=None):
     """Guarda una serie y sus temporadas/episodios en la base de datos."""
     if not series_data:
         return False
+
+    global total_saved
 
     connection = connect_db(db_path)
     cursor = connection.cursor()
@@ -1543,7 +1545,9 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
                                 stats['new_links'] += 1
                             with total_saved_lock:
                                 total_saved += 1
-                                progress_data['total_saved'] = total_saved
+                            if progress_data is not None:
+                                with progress_lock:
+                                    progress_data['total_saved'] = total_saved
                         else:
                             logger.debug(
                                 f"Enlace ya existe: episode_id={episode_id}, server={link_data['server']}, language={link_data['language']}"
