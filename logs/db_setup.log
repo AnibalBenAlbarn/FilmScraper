@@ -23773,3 +23773,31 @@ KeyboardInterrupt
 2025-03-28 12:55:09,885 - INFO - Script finalizado
 2025-03-28 13:03:13,014 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\Workplace\HdfullScrappers\Scripts\direct_dw_db.db
 2025-03-28 13:03:13,032 - INFO - Base de datos torrent_dw_db.db creada correctamente en: D:\Workplace\HdfullScrappers\Scripts\torrent_dw_db.db
+2025-09-12 11:26:33,717 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 11:26:33,717 - DEBUG - Iniciando configuraciï¿½n de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 11:26:33,731 - INFO - Base de datos configurada correctamente
+2025-09-12 11:27:14,022 - DEBUG - Using existing database path: D:\DB\direct_dw_db.db
+2025-09-12 11:27:14,023 - INFO - Ruta de base de datos establecida en: D:\DB\direct_dw_db.db
+2025-09-12 11:28:01,365 - DEBUG - Selected database path: D:\DB\direct_dw_db.db
+2025-09-12 11:28:01,367 - INFO - Ruta de base de datos establecida en: D:\DB\direct_dw_db.db
+2025-09-12 11:28:07,845 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 11:28:07,846 - DEBUG - Iniciando configuraciï¿½n de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 11:28:07,879 - INFO - Base de datos configurada correctamente
+2025-09-12 11:39:14,319 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 11:39:14,319 - DEBUG - Iniciando configuraciï¿½n de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 11:39:14,322 - INFO - Base de datos configurada correctamente
+2025-09-12 11:39:14,331 - INFO - Base de datos torrent_dw_db.db creada correctamente en: C:\Users\Anibal\PycharmProjects\HdfullScrappers\Scripts\torrent_dw_db.db
+2025-09-12 11:39:45,022 - DEBUG - Selected database path: D:\DB\direct_dw_db.db
+2025-09-12 11:39:45,023 - INFO - Ruta de base de datos establecida en: D:\DB\direct_dw_db.db
+2025-09-12 11:40:01,199 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 11:40:01,200 - DEBUG - Iniciando configuraciï¿½n de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 11:40:01,239 - INFO - Base de datos configurada correctamente
+2025-09-12 11:40:01,256 - INFO - Base de datos torrent_dw_db.db creada correctamente en: C:\Users\Anibal\PycharmProjects\HdfullScrappers\Scripts\torrent_dw_db.db
+2025-09-12 11:52:36,429 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 11:52:36,429 - DEBUG - Iniciando configuración de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 11:52:36,466 - INFO - Base de datos configurada correctamente
+2025-09-12 11:52:36,513 - INFO - Base de datos torrent_dw_db.db creada correctamente en: D:\DB\torrent_dw_db.db
+2025-09-12 15:22:09,607 - INFO - Base de datos direct_dw_db.db creada correctamente en: D:\DB\direct_dw_db.db
+2025-09-12 15:22:09,608 - DEBUG - Iniciando configuración de la base de datos en: D:\DB\direct_dw_db.db
+2025-09-12 15:22:09,615 - INFO - Base de datos configurada correctamente
+2025-09-12 15:22:09,722 - INFO - Base de datos torrent_dw_db.db creada correctamente en: D:\DB\torrent_dw_db.db

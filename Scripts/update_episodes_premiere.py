@@ -146,7 +146,7 @@ def get_episode_urls_from_premiere_page(driver):
         last_count = 0
         no_new_results_count = 0
         max_no_new_results = 5  # Número máximo de intentos sin nuevos resultados antes de parar
-        max_scroll_attempts = 50  # Límite de scroll para evitar bucles infinitos
+        max_scroll_attempts = 65  # Límite de scroll para evitar bucles infinitos
 
         # Conjunto para evitar duplicados
         seen_urls = set()
