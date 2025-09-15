@@ -57,3 +57,25 @@ python Scripts/run_all.py --scraper torrent
 
 Arguments like `--db-path`, `--max-pages` and `--max-workers` are only applicable
 to the direct scrapers.
+
+## Building a standalone executable
+
+The project can be packaged into a single executable that runs from the console
+using [PyInstaller](https://pyinstaller.org/).
+
+1. Install PyInstaller (inside the virtual environment if desired):
+
+   ```bash
+   pip install pyinstaller
+   ```
+
+2. From the project root, build the application using the provided specification
+   file:
+
+   ```bash
+   pyinstaller hdfull.spec
+   ```
+
+The generated executable will be located in `dist/HdfullScrappers/`. Execute it
+from a command prompt to access the same menus available when running
+`python main.py`.

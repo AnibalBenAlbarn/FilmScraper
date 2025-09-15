@@ -2,6 +2,17 @@ import os
 import sys
 import subprocess
 
+# Import script modules so PyInstaller includes them
+import Scripts.direct_dw_films_scraper  # noqa: F401
+import Scripts.direct_dw_series_scraper  # noqa: F401
+import Scripts.update_movies_premiere  # noqa: F401
+import Scripts.update_movies_updated  # noqa: F401
+import Scripts.update_episodes_premiere  # noqa: F401
+import Scripts.update_episodes_updated  # noqa: F401
+import Scripts.torrent_dw_films_scraper  # noqa: F401
+import Scripts.torrent_dw_series_scraper  # noqa: F401
+
+# Base directory for scripts (unused when packaged, kept for compatibility)
 SCRIPT_DIR = os.path.join(os.path.dirname(__file__), "Scripts")
 
 
@@ -13,9 +24,14 @@ def pause():
     input("\nPulsa ENTER para continuar...")
 
 
-def run_script(script_name, extra_args=None):
-    script_path = os.path.join(SCRIPT_DIR, script_name)
-    cmd = [sys.executable, script_path]
+def run_script(module_name, extra_args=None):
+    """Run a scraper module in a separate process.
+
+    Using ``-m`` ensures compatibility when the project is packaged with
+    PyInstaller, as the modules are loaded from the bundled archive.
+    """
+
+    cmd = [sys.executable, "-m", f"Scripts.{module_name}"]
     if extra_args:
         cmd.extend(extra_args)
     print(f"\n▶ Ejecutando: {' '.join(cmd)}")
@@ -36,10 +52,10 @@ def direct_movies_menu():
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('direct_dw_films_scraper.py')
+            run_script('direct_dw_films_scraper')
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('direct_dw_films_scraper.py', ['--start-page', start_page])
+            run_script('direct_dw_films_scraper', ['--start-page', start_page])
         elif choice == '0':
             return
 
@@ -53,10 +69,10 @@ def direct_series_menu():
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('direct_dw_series_scraper.py')
+            run_script('direct_dw_series_scraper')
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('direct_dw_series_scraper.py', ['--start-page', start_page])
+            run_script('direct_dw_series_scraper', ['--start-page', start_page])
         elif choice == '0':
             return
 
@@ -78,13 +94,13 @@ def direct_menu():
         elif choice == '2':
             direct_series_menu()
         elif choice == '3':
-            run_script('update_movies_premiere.py')
+            run_script('update_movies_premiere')
         elif choice == '4':
-            run_script('update_movies_updated.py')
+            run_script('update_movies_updated')
         elif choice == '5':
-            run_script('update_episodes_premiere.py')
+            run_script('update_episodes_premiere')
         elif choice == '6':
-            run_script('update_episodes_updated.py')
+            run_script('update_episodes_updated')
         elif choice == '0':
             return
 
@@ -98,10 +114,10 @@ def torrent_movies_menu():
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('torrent_dw_films_scraper.py', ['--resume'])
+            run_script('torrent_dw_films_scraper', ['--resume'])
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('torrent_dw_films_scraper.py', ['--start-page', start_page])
+            run_script('torrent_dw_films_scraper', ['--start-page', start_page])
         elif choice == '0':
             return
 
@@ -115,10 +131,10 @@ def torrent_series_menu():
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('torrent_dw_series_scraper.py', ['--resume'])
+            run_script('torrent_dw_series_scraper', ['--resume'])
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('torrent_dw_series_scraper.py', ['--start-page', start_page])
+            run_script('torrent_dw_series_scraper', ['--start-page', start_page])
         elif choice == '0':
             return
 
