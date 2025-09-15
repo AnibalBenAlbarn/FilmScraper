@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 
 # Obtener la ruta del proyecto desde las utilidades compartidas
 from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuración del logger para evitar duplicación
 logger = logging.getLogger("films_scraper")
@@ -115,6 +116,9 @@ NUM_WORKERS = 4
 # Lock para sincronizar el acceso a la base de datos
 db_lock = Lock()
 
+# Lock para sincronizar el guardado de progreso
+progress_lock = Lock()
+
 # Contador total de enlaces guardados
 total_saved = 0
 total_saved_lock = Lock()
@@ -123,16 +127,22 @@ total_saved_lock = Lock()
 movie_queue = Queue()
 
 
-# Función para crear un nuevo driver de Chrome
+# Función para crear un nuevo driver de Chrome utilizando webdriver-manager
 def create_driver():
-    service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Ejecuta Chrome en modo headless
+    options.add_argument("--headless")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    return webdriver.Chrome(service=service, options=options)
+    try:
+        service = Service(ChromeDriverManager().install())
+    except Exception:
+        service = Service(os.path.join(PROJECT_ROOT, "chromedriver.exe"))
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(60)
+    driver.implicitly_wait(5)
+    return driver
 
 
 # Función para inicializar la base de datos
@@ -551,15 +561,13 @@ def _find_movie_divs(driver):
 
 
 # Función para extraer URLs de películas de una página
-def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
+def extract_movie_urls_from_page(driver, page_url, page_number):
     logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
     try:
         driver.get(page_url)
-        time.sleep(2)  # Esperar a que se cargue la página
+        time.sleep(2)
 
-        # Obtener todos los divs de películas de la página
         movie_divs = _find_movie_divs(driver)
-
         total_movies = len(movie_divs)
         logger.info(f"Encontradas {total_movies} películas en la página {page_number}")
 
@@ -567,33 +575,32 @@ def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
             logger.info(f"No se encontraron películas en la página {page_number}. Puede ser la última página.")
             return []
 
-        # Guardar las URLs de las películas
         movie_urls = []
-        for i in range(start_index, total_movies):
+        for idx, movie_div in enumerate(movie_divs):
+            if not movie_div:
+                continue
             try:
-                movie_div = movie_divs[i]
                 link_tag = movie_div.find_element(By.TAG_NAME, "a")
                 movie_url = link_tag.get_attribute("href")
-                movie_urls.append((i, movie_url))
+                title = link_tag.get_attribute("title") or link_tag.text.strip()
+                movie_urls.append((page_number, idx, movie_url, title))
             except StaleElementReferenceException:
-                # Si el elemento está obsoleto, refrescamos la página y volvemos a intentarlo
-                logger.warning(f"Elemento obsoleto encontrado en el índice {i}. Refrescando página...")
+                logger.warning(f"Elemento obsoleto encontrado en el índice {idx}. Refrescando página...")
                 driver.refresh()
                 time.sleep(2)
-
                 movie_divs = _find_movie_divs(driver)
-                if i < len(movie_divs):
+                if idx < len(movie_divs):
                     try:
-                        movie_div = movie_divs[i]
-                        link_tag = movie_div.find_element(By.TAG_NAME, "a")
+                        link_tag = movie_divs[idx].find_element(By.TAG_NAME, "a")
                         movie_url = link_tag.get_attribute("href")
-                        movie_urls.append((i, movie_url))
+                        title = link_tag.get_attribute("title") or link_tag.text.strip()
+                        movie_urls.append((page_number, idx, movie_url, title))
                     except Exception as e:
                         logger.error(f"Error al obtener la URL después del refresco: {e}")
                 else:
-                    logger.error(f"Índice {i} fuera de rango después de refrescar")
+                    logger.error(f"Índice {idx} fuera de rango después de refrescar")
             except Exception as e:
-                logger.error(f"Error al obtener la URL de la película en el índice {i}: {e}")
+                logger.error(f"Error al obtener la URL de la película en el índice {idx}: {e}")
 
         return movie_urls
     except Exception as e:
@@ -602,11 +609,18 @@ def extract_movie_urls_from_page(driver, page_url, page_number, start_index=0):
 
 
 # Función para guardar el progreso
-def save_progress(page_number, last_movie_index, total_saved):
+def save_progress(page_number, last_movie_title, last_movie_index, total_saved):
     try:
-        with open(progress_file, 'w') as f:
-            json.dump({'page_number': page_number, 'last_movie_index': last_movie_index, 'total_saved': total_saved}, f)
-        logger.debug(f"Progreso guardado: página {page_number}, índice {last_movie_index}, total {total_saved}")
+        with progress_lock:
+            with open(progress_file, 'w') as f:
+                json.dump({
+                    'page_number': page_number,
+                    'last_movie_title': last_movie_title,
+                    'last_movie_index': last_movie_index,
+                    'total_saved': total_saved
+                }, f)
+        logger.debug(
+            f"Progreso guardado: página {page_number}, título {last_movie_title}, índice {last_movie_index}, total {total_saved}")
     except Exception as e:
         logger.error(f"Error al guardar el progreso: {e}")
 
@@ -619,13 +633,16 @@ def load_progress():
             with open(progress_file, 'r') as f:
                 progress = json.load(f)
                 logger.info(
-                    f"Progreso cargado: página {progress['page_number']}, índice {progress.get('last_movie_index')}, Total guardado = {db_total}")
-                return progress['page_number'], progress.get('last_movie_index'), db_total
+                    f"Progreso cargado: página {progress['page_number']}, título {progress.get('last_movie_title')}, índice {progress.get('last_movie_index')}, Total guardado = {db_total}")
+                return (progress['page_number'],
+                        progress.get('last_movie_title'),
+                        progress.get('last_movie_index'),
+                        db_total)
         logger.info("No se encontró archivo de progreso. Comenzando desde el principio.")
-        return 1, None, db_total
+        return 1, None, None, db_total
     except Exception as e:
         logger.error(f"Error al cargar el progreso: {e}")
-        return 1, None, db_total
+        return 1, None, None, db_total
 
 
 # Función worker para procesar películas
@@ -645,10 +662,10 @@ def movie_worker(worker_id):
     try:
         while True:
             try:
-                # Obtener una URL de película de la cola
-                index, movie_url = movie_queue.get(block=False)
+                # Obtener datos de película de la cola
+                page_num, index, movie_url, title = movie_queue.get(block=False)
 
-                logger.info(f"Worker {worker_id}: Procesando película {index}: {movie_url}")
+                logger.info(f"Worker {worker_id}: Procesando película {index} (página {page_num}): {movie_url}")
 
                 # Intentar extraer los detalles de la película con reintentos
                 success = False
@@ -694,6 +711,7 @@ def movie_worker(worker_id):
                     if links:
                         with total_saved_lock:
                             total_saved += links
+                        save_progress(page_num, title, index, total_saved)
 
                 # Marcar la tarea como completada
                 movie_queue.task_done()
@@ -738,10 +756,9 @@ def extract_all_movies():
 
     # Cargar el progreso guardado
     global total_saved
-    page_number, _, total_saved_local = load_progress()
+    page_number, last_title, last_index, total_saved_local = load_progress()
     with total_saved_lock:
         total_saved = total_saved_local
-    start_index = 0
     logger.info(f"Enlaces guardados previamente: {total_saved}")
 
     try:
@@ -752,35 +769,37 @@ def extract_all_movies():
 
             # Procesar páginas una por una
             while True:
-                page_url = f"{movies_url}/{page_number}" if page_number > 1 else movies_url
+                page_url = f"{movies_url}/{page_number}"
                 logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
 
-                # Extraer URLs de películas de la página actual
-                movie_urls = extract_movie_urls_from_page(main_driver, page_url, page_number, start_index)
+                movie_urls = extract_movie_urls_from_page(main_driver, page_url, page_number)
 
-                # Si no hay películas en esta página, hemos llegado al final
                 if not movie_urls:
                     logger.info(f"No se encontraron películas en la página {page_number}. Finalizando.")
                     break
 
-                # Añadir las URLs a la cola para que los workers las procesen
-                for index, url in movie_urls:
-                    movie_queue.put((index, url))
-                    logger.debug(f"Añadida película {index} a la cola: {url}")
+                # Si estamos reanudando y hay un título previo, recortar la lista
+                if last_title:
+                    for idx, data in enumerate(movie_urls):
+                        if data[3] == last_title:
+                            movie_urls = movie_urls[idx:]
+                            break
+                    last_title = None
 
-                # Guardar el progreso apuntando a la siguiente página
+                # Guardar progreso al inicio de la página
                 with total_saved_lock:
                     current_total = total_saved
-                save_progress(page_number + 1, -1, current_total)
+                save_progress(page_number, None, -1, current_total)
 
-                # Si conocemos el total de páginas y hemos llegado a la última, terminar
+                for data in movie_urls:
+                    movie_queue.put(data)
+                    logger.debug(f"Añadida película {data[1]} a la cola: {data[2]}")
+
                 if total_pages and page_number >= total_pages:
                     logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
                     break
 
-                # Avanzar a la siguiente página
                 page_number += 1
-                start_index = 0  # Resetear el índice para la siguiente página
 
             # Esperar a que se complete el procesamiento de todas las películas en la cola
             logger.info("Esperando a que se completen todas las tareas en la cola...")
@@ -800,7 +819,7 @@ def extract_all_movies():
         logger.info("Driver principal cerrado.")
         with total_saved_lock:
             current_total = total_saved
-        save_progress(page_number, -1, current_total)
+        save_progress(page_number, None, -1, current_total)
         logger.info(f"Proceso finalizado. Total enlaces guardados: {current_total}")
 
 
@@ -823,8 +842,8 @@ if __name__ == "__main__":
         logger.critical(f"Error crítico en el scraper: {e}")
         # Intentar guardar el progreso antes de salir
         try:
-            page_number, _, total_saved_local = load_progress()
-            save_progress(page_number, -1, total_saved_local)
+            page_number, _, _, total_saved_local = load_progress()
+            save_progress(page_number, None, -1, total_saved_local)
         except Exception:
             pass
     finally:
