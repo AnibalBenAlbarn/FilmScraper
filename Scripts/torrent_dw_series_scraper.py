@@ -458,45 +458,38 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
             logger.info(f"Extrayendo: {series_url}")
 
             success = False
-            for attempt in range(3):
-                series_title, season_number, quality, episodes = scrape_series_details(series_url)
-                if series_title and episodes:
-                    episodes_added = insert_data(conn, series_title, season_number, quality, episodes)
-                    if episodes_added:
-                        logger.info(f"Guardado: {series_title} - Temporada {season_number} con calidad {quality}")
-                        total_saved += episodes_added
-                        consecutive_failures = 0  # Reiniciar contador de fallos
+            try:
+                for attempt in range(3):
+                    series_title, season_number, quality, episodes = scrape_series_details(series_url)
+                    if series_title and episodes:
+                        episodes_added = insert_data(conn, series_title, season_number, quality, episodes)
+                        if episodes_added:
+                            logger.info(f"Guardado: {series_title} - Temporada {season_number} con calidad {quality}")
+                            total_saved += episodes_added
+                            consecutive_failures = 0
+                        else:
+                            logger.info(f"No guardado: {series_title} - Temporada {season_number} con calidad {quality}")
+                        success = True
+                        break
                     else:
-                        logger.info(f"No guardado: {series_title} - Temporada {season_number} con calidad {quality}")
-                    success = True
-                    break
-                else:
-                    logger.warning(f"Intento {attempt + 1} fallido para ID: {current_id}")
-                    time.sleep(1 + attempt)  # Incrementar tiempo de espera en cada intento
-
-            if not success:
-                consecutive_failures += 1
-                logger.warning(
-                    f"Serie no encontrada para ID: {current_id}. Fallos consecutivos: {consecutive_failures}")
-
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.error(
-                        f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
-                    next_id = current_id + 1
-                    break
-
-            # Calcular el próximo ID a procesar
-            next_id = current_id + 1
-
-            # Guardar progreso periódicamente o cuando hay un error
-            if current_id % 1 == 0 or not success:
+                        logger.warning(f"Intento {attempt + 1} fallido para ID: {current_id}")
+                        time.sleep(1 + attempt)
+                if not success:
+                    consecutive_failures += 1
+                    logger.warning(
+                        f"Serie no encontrada para ID: {current_id}. Fallos consecutivos: {consecutive_failures}")
+                    if consecutive_failures >= max_consecutive_failures:
+                        logger.error(
+                            f"Se alcanzó el límite de {max_consecutive_failures} fallos consecutivos. Finalizando el script.")
+                        break
+            except Exception as e:
+                logger.error(f"Error al procesar la serie ID {current_id}: {e}")
+            finally:
+                next_id = current_id + 1
                 save_progress(next_id, total_saved)
-
-            # Pausa aleatoria para evitar bloqueos (entre 1 y 3 segundos)
-            sleep_time = 1 + random.random() * 2
-            time.sleep(sleep_time)
-
-            current_id = next_id
+                sleep_time = 1 + random.random() * 2
+                time.sleep(sleep_time)
+                current_id = next_id
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
     except Exception as e:

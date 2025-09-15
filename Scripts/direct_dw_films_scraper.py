@@ -8,8 +8,8 @@ import sys
 import argparse
 import concurrent.futures
 from datetime import datetime
-from queue import Queue
-from threading import Lock
+from queue import Queue, Empty
+from threading import Lock, Event
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
@@ -102,6 +102,9 @@ total_saved_lock = Lock()
 
 # Cola para almacenar las URLs de las películas a procesar
 movie_queue = Queue()
+
+# Evento global para manejar el apagado controlado
+shutdown_event = Event()
 
 
 # Función para crear un nuevo driver de Chrome utilizando webdriver-manager
@@ -628,7 +631,7 @@ def load_progress():
 
 
 # Función worker para procesar películas
-def movie_worker(worker_id):
+def movie_worker(worker_id, shutdown_event):
     global total_saved
     # Crear un driver para este worker
     driver = create_driver()
@@ -642,41 +645,39 @@ def movie_worker(worker_id):
     logger.info(f"Worker {worker_id}: Iniciado y listo para procesar películas")
 
     try:
-        while True:
+        while not shutdown_event.is_set():
             try:
-                # Obtener datos de película de la cola
-                page_num, index, movie_url, title = movie_queue.get(block=False)
+                page_num, index, movie_url, title = movie_queue.get(timeout=1)
+            except Empty:
+                continue
 
+            try:
                 logger.info(f"Worker {worker_id}: Procesando película {index} (página {page_num}): {movie_url}")
 
-                # Intentar extraer los detalles de la película con reintentos
                 success = False
                 movie_details = None
 
-                # Primer conjunto de 3 intentos
                 for attempt in range(3):
                     try:
                         movie_details = extract_movie_details(driver, movie_url)
                         success = True
-                        break  # Salir del bucle de reintentos si tiene éxito
+                        break
                     except Exception as e:
                         logger.error(f"Worker {worker_id}: Error al extraer datos de la película {movie_url}: {e}")
                         if attempt < 2:
                             logger.info(f"Worker {worker_id}: Reintentando en 5 segundos... (Intento {attempt + 1}/3)")
                             time.sleep(5)
 
-                # Si después de 3 intentos no hay éxito, reiniciar el driver y probar 3 veces más
                 if not success:
                     logger.info(f"Worker {worker_id}: Reiniciando el driver después de 3 intentos fallidos...")
                     driver.quit()
                     driver = create_driver()
                     if login(driver):
-                        # Segundo conjunto de 3 intentos después de reiniciar el driver
                         for attempt in range(3):
                             try:
                                 movie_details = extract_movie_details(driver, movie_url)
                                 success = True
-                                break  # Salir del bucle de reintentos si tiene éxito
+                                break
                             except Exception as e:
                                 logger.error(
                                     f"Worker {worker_id}: Error al extraer datos de la película {movie_url} después de reiniciar: {e}")
@@ -687,30 +688,23 @@ def movie_worker(worker_id):
                     else:
                         logger.error(f"Worker {worker_id}: No se pudo iniciar sesión después de reiniciar el driver.")
 
-                # Si se obtuvieron los detalles de la película, insertarlos en la base de datos
                 if success and movie_details:
                     links = insert_data_into_db(movie_details)
                     if links:
                         with total_saved_lock:
                             total_saved += links
-                        save_progress(page_num, title, index, total_saved)
-
-                # Marcar la tarea como completada
-                movie_queue.task_done()
 
             except Exception as e:
-                if "queue.Empty" in str(e.__class__):
-                    # La cola está vacía, esperar un poco y volver a intentar
-                    time.sleep(1)
-                    # Si la cola sigue vacía después de esperar, salir del bucle
-                    if movie_queue.empty():
-                        logger.info(f"Worker {worker_id}: No hay más películas para procesar. Finalizando.")
-                        break
-                else:
-                    logger.error(f"Worker {worker_id}: Error inesperado: {e}")
-                    time.sleep(1)
+                logger.error(f"Worker {worker_id}: Error inesperado: {e}")
+                time.sleep(1)
+            finally:
+                with total_saved_lock:
+                    current_total = total_saved
+                save_progress(page_num, title, index, current_total)
+                movie_queue.task_done()
+                if shutdown_event.is_set():
+                    break
     finally:
-        # Cerrar el driver al finalizar
         driver.quit()
         logger.info(f"Worker {worker_id}: Finalizado y driver cerrado.")
 
@@ -750,59 +744,54 @@ def extract_all_movies(start_page=None, db_path=None):
     logger.info(f"Enlaces guardados previamente: {total_saved}")
 
     try:
-        # Crear un pool de workers
         with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            # Iniciar los workers
-            workers = [executor.submit(movie_worker, i + 1) for i in range(NUM_WORKERS)]
+            workers = [executor.submit(movie_worker, i + 1, shutdown_event) for i in range(NUM_WORKERS)]
+            try:
+                while not shutdown_event.is_set():
+                    page_url = f"{movies_url}/{page_number}"
+                    logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
 
-            # Procesar páginas una por una
-            while True:
-                page_url = f"{movies_url}/{page_number}"
-                logger.info(f"Extrayendo URLs de películas de la página: {page_url}")
+                    movie_urls = extract_movie_urls_from_page(main_driver, page_url, page_number)
 
-                movie_urls = extract_movie_urls_from_page(main_driver, page_url, page_number)
+                    if not movie_urls:
+                        logger.info(f"No se encontraron películas en la página {page_number}. Finalizando.")
+                        break
 
-                if not movie_urls:
-                    logger.info(f"No se encontraron películas en la página {page_number}. Finalizando.")
-                    break
+                    if last_title:
+                        for idx, data in enumerate(movie_urls):
+                            if data[3] == last_title:
+                                movie_urls = movie_urls[idx:]
+                                break
+                        last_title = None
 
-                # Si estamos reanudando y hay un título previo, recortar la lista
-                if last_title:
-                    for idx, data in enumerate(movie_urls):
-                        if data[3] == last_title:
-                            movie_urls = movie_urls[idx:]
-                            break
-                    last_title = None
+                    with total_saved_lock:
+                        current_total = total_saved
+                    save_progress(page_number, None, -1, current_total)
 
-                # Guardar progreso al inicio de la página
-                with total_saved_lock:
-                    current_total = total_saved
-                save_progress(page_number, None, -1, current_total)
+                    for data in movie_urls:
+                        movie_queue.put(data)
+                        logger.debug(f"Añadida película {data[1]} a la cola: {data[2]}")
 
-                for data in movie_urls:
-                    movie_queue.put(data)
-                    logger.debug(f"Añadida película {data[1]} a la cola: {data[2]}")
+                    if total_pages and page_number >= total_pages:
+                        logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
+                        break
 
-                if total_pages and page_number >= total_pages:
-                    logger.info(f"Se ha alcanzado la última página ({page_number} de {total_pages}). Finalizando.")
-                    break
-
-                page_number += 1
-
-            # Esperar a que se complete el procesamiento de todas las películas en la cola
-            logger.info("Esperando a que se completen todas las tareas en la cola...")
-            movie_queue.join()
-
-            # Cancelar los workers
-            for worker in workers:
-                worker.cancel()
-
-            logger.info("Todos los workers han finalizado.")
+                    page_number += 1
+            except KeyboardInterrupt:
+                logger.info("Señal de apagado recibida. Esperando a que los workers terminen la tarea en curso...")
+                shutdown_event.set()
+            finally:
+                if not shutdown_event.is_set():
+                    logger.info("Esperando a que se completen todas las tareas en la cola...")
+                    movie_queue.join()
+                shutdown_event.set()
+                for worker in workers:
+                    worker.result()
+                logger.info("Todos los workers han finalizado.")
 
     except Exception as e:
         logger.critical(f"Error crítico en el proceso principal: {e}")
     finally:
-        # Cerrar el driver principal
         main_driver.quit()
         logger.info("Driver principal cerrado.")
         with total_saved_lock:
