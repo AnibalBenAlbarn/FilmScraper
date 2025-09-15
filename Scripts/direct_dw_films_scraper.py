@@ -17,7 +17,7 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 from bs4 import BeautifulSoup
 
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL
+from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, log_link_insertion
 from webdriver_manager.chrome import ChromeDriverManager
 
 # Configuración del logger para evitar duplicación
