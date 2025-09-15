@@ -19,7 +19,8 @@ from scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
     save_progress, load_progress, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT
+    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    log_link_insertion
 )
 
 # Configuración específica para este script
@@ -711,19 +712,23 @@ def insert_episode_links(episode_id, links, connection=None, db_path=None):
                 WHERE episode_id=? AND server_id=? AND language=? AND link=?
             ''', (episode_id, server_id, link["language"], link["link"]))
             link_exists = cursor.fetchone()
-
             if not link_exists:
                 # Insertar el enlace en la base de datos
                 cursor.execute('''
                     INSERT INTO links_files_download (episode_id, server_id, language, link, quality_id, created_at)
                     VALUES (?, ?, ?, ?, ?, datetime('now'))
                 ''', (episode_id, server_id, link["language"], link["link"], quality_id))
+                log_link_insertion(
+                    logger,
+                    episode_id=episode_id,
+                    server=link["server"],
+                    language=link["language"],
+                )
                 inserted_count += 1
-                logger.debug(
-                    f"Enlace insertado: episode_id={episode_id}, server={link['server']}, language={link['language']}")
             else:
                 logger.debug(
-                    f"Enlace ya existe: episode_id={episode_id}, server={link['server']}, language={link['language']}")
+                    f"Enlace ya existe: episode_id={episode_id}, server={link['server']}, language={link['language']}"
+                )
 
         connection.commit()
         return inserted_count

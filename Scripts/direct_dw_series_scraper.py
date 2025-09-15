@@ -1541,8 +1541,12 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
                                 """,
                                 (series_id, server_id, link_data["language"], link_data["url"], quality_id, episode_id)
                             )
-                            logger.info(
-                                f"Nuevo enlace insertado para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
+                            log_link_insertion(
+                                logger,
+                                episode_id=episode_id,
+                                server=link_data['server'],
+                                language=link_data['language'],
+                            )
                             with stats_lock:
                                 stats['new_links'] += 1
                             with total_saved_lock:
@@ -1550,7 +1554,8 @@ def save_series_to_db(series_data, series_exists=False, db_path=None):
                                 progress_data['total_saved'] = total_saved
                         else:
                             logger.debug(
-                                f"Enlace ya existe para episodio {episode_number}: {link_data['server']} - {link_data['language']}")
+                                f"Enlace ya existe: episode_id={episode_id}, server={link_data['server']}, language={link_data['language']}"
+                            )
 
         connection.commit()
         return True

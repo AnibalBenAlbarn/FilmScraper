@@ -480,13 +480,19 @@ def insert_data_into_db(movie):
                     INSERT INTO links_files_download (movie_id, server_id, language, link, quality_id)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (movie_id, server_id, link["language"], link["link"], quality_id))
-                logger.debug(
-                    f"Enlace insertado: movie_id={movie_id}, server={link['server']}, language={link['language']}")
+                log_link_insertion(
+                    logger,
+                    movie_id=movie_id,
+                    server=link["server"],
+                    language=link["language"],
+                )
                 links_inserted += 1
 
             # Confirmar la transacción solo si todo fue exitoso
             connection.commit()
-            logger.info(f"Datos insertados en la base de datos para la película: {movie['Nombre']}")
+            logger.info(
+                f"Datos insertados en la base de datos para la película: {movie['Nombre']} ({links_inserted} enlaces)"
+            )
             return links_inserted
         except Exception as e:
             logger.error(f"Error al insertar datos en la base de datos: {e}")
