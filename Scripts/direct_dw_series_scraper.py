@@ -22,6 +22,7 @@ try:
         save_progress, load_progress, clear_cache, find_series_by_title_year,
         season_exists, episode_exists, insert_series, insert_season,
         insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+        log_link_insertion,
     )
 except ImportError:  # pragma: no cover - fallback when executed directly
     from scraper_utils import (
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover - fallback when executed directly
         save_progress, load_progress, clear_cache, find_series_by_title_year,
         season_exists, episode_exists, insert_series, insert_season,
         insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+        log_link_insertion,
     )
 
 # Configuración específica para este script

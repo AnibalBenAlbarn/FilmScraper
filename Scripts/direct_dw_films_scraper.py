@@ -18,10 +18,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from bs4 import BeautifulSoup
 
+
 try:  # pragma: no cover - compatible al ejecutarse como script o módulo
-    from .scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger
+    from .scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
 except ImportError:  # pragma: no cover
-    from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger
+    from scraper_utils import PROJECT_ROOT, BASE_URL, LOGIN_URL, DB_PATH, setup_logger, log_link_insertion
+    
 from webdriver_manager.chrome import ChromeDriverManager
 
 
