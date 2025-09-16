@@ -19,6 +19,13 @@ run.bat --series --start-page 2
 
 This executes the series scraper starting at page 2.
 
+To jump straight into the scraper/update menus without going through the top
+level application menu use:
+
+```bat
+run.bat --scrapers-menu
+```
+
 ## Manual setup (non-Windows)
 
 If you are running the project on another platform, perform the steps manually:
@@ -34,6 +41,12 @@ python main.py
 
 
 When running `python main.py` without command-line options, an interactive menu is shown. Under **Database Setup** you can create the direct download and torrent databases individually or both at once. The menu also allows changing the paths of the direct and torrent databases and running custom SQL scripts. A separate **Run Scrapers** option exposes the previous Direct and Torrent scraper menus in a single place.
+
+The scraper/update menus can also be opened directly from the command line:
+
+```bash
+python main.py --scrapers-menu
+```
 
 
 ## Repository structure
