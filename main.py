@@ -474,15 +474,28 @@ def main_menu():
             time.sleep(1)
 
 
-if __name__ == "__main__":
+def parse_arguments(argv=None):
+    """Construye y analiza los argumentos de línea de comandos."""
     parser = argparse.ArgumentParser(description='HDFull Scraper')
     parser.add_argument('--series', action='store_true', help='Ejecutar scraper de series directas')
     parser.add_argument('--start-page', type=int, default=1, help='Página inicial para el scraper')
     parser.add_argument('--max-pages', type=int, help='Número máximo de páginas a scrapear')
     parser.add_argument('--reset', action='store_true', help='Reiniciar el progreso almacenado')
     parser.add_argument('--db-path', type=str, help='Ruta a la base de datos')
+    parser.add_argument(
+        '--scrapers-menu',
+        '--menu-scrapers',
+        action='store_true',
+        dest='scrapers_menu',
+        help='Abrir directamente el menú de scrapers y actualizaciones.'
+    )
 
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """Punto de entrada principal para la aplicación."""
+    args = parse_arguments(argv)
 
     if args.series:
         if args.db_path:
@@ -493,6 +506,15 @@ if __name__ == "__main__":
             max_pages=args.max_pages,
             reset_progress=args.reset
         )
-        sys.exit(0)
+        return 0
+
+    if args.scrapers_menu:
+        run_scrapers_menu()
+        return 0
 
     main_menu()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
