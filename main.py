@@ -195,12 +195,11 @@ def setup_database_menu():
         # Run database script
         script_path = input("\nEnter the path to the SQL script file: ")
         if os.path.exists(script_path):
-            from scraper_utils import execute_sql_script
             db_path = input("\nEnter the path to the database (leave empty for default): ")
             if not db_path:
                 db_path = scraper_utils.DB_PATH
 
-            if execute_sql_script(script_path, db_path, logger):
+            if scraper_utils.execute_sql_script(script_path, db_path, logger):
                 print("\nScript executed successfully!")
             else:
                 print("\nFailed to execute script.")
@@ -232,12 +231,11 @@ def settings_menu():
 
     if choice == '1':
         try:
-            from scraper_utils import MAX_WORKERS, set_max_workers
-            current = MAX_WORKERS
+            current = scraper_utils.MAX_WORKERS
             print(f"\nCurrent maximum workers: {current}")
             new_value = int(input("Enter new maximum workers (2-8): "))
             if 2 <= new_value <= 8:
-                set_max_workers(new_value)
+                scraper_utils.set_max_workers(new_value)
                 print(f"\nMaximum workers changed to {new_value}")
             else:
                 print("\nInvalid value. Must be between 2 and 8.")
@@ -246,12 +244,11 @@ def settings_menu():
 
     elif choice == '2':
         try:
-            from scraper_utils import MAX_RETRIES, set_max_retries
-            current = MAX_RETRIES
+            current = scraper_utils.MAX_RETRIES
             print(f"\nCurrent maximum retries: {current}")
             new_value = int(input("Enter new maximum retries (1-10): "))
             if 1 <= new_value <= 10:
-                set_max_retries(new_value)
+                scraper_utils.set_max_retries(new_value)
                 print(f"\nMaximum retries changed to {new_value}")
             else:
                 print("\nInvalid value. Must be between 1 and 10.")
@@ -259,13 +256,12 @@ def settings_menu():
             print("\nInvalid input. Please enter a number.")
 
     elif choice == '3':
-        from scraper_utils import CACHE_ENABLED, toggle_cache
-        current = "Enabled" if CACHE_ENABLED else "Disabled"
+        current = "Enabled" if scraper_utils.CACHE_ENABLED else "Disabled"
         print(f"\nCache is currently: {current}")
         new_value = input("Toggle cache (y/n): ")
         if new_value.lower() == 'y':
-            toggle_cache()
-            new_status = "Enabled" if CACHE_ENABLED else "Disabled"
+            scraper_utils.toggle_cache()
+            new_status = "Enabled" if scraper_utils.CACHE_ENABLED else "Disabled"
             print(f"\nCache is now: {new_status}")
 
     elif choice == '4':
@@ -320,8 +316,6 @@ if __name__ == "__main__":
     if args.series:
         # Run series scraper with command line arguments
         if args.db_path:
-            from scraper_utils import set_db_path
-
             set_db_path(args.db_path)
 
         process_all_series(

@@ -269,6 +269,47 @@ def connect_db(db_path=None):
         raise Exception(f"Error al conectar a la base de datos: {e}")
 
 
+def execute_sql_script(script_path, db_path=None, logger=None):
+    """Ejecuta un script SQL en la base de datos especificada."""
+    if db_path is None:
+        db_path = DB_PATH
+
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    absolute_script_path = os.path.abspath(script_path)
+    logger.debug(
+        "Preparando ejecución del script SQL '%s' sobre la base de datos '%s'",
+        absolute_script_path,
+        db_path,
+    )
+
+    if not os.path.exists(absolute_script_path):
+        logger.error("El archivo de script SQL no existe: %s", absolute_script_path)
+        return False
+
+    try:
+        with open(absolute_script_path, "r", encoding="utf-8") as script_file:
+            script_content = script_file.read()
+
+        if not script_content.strip():
+            logger.warning("El archivo de script SQL '%s' está vacío.", absolute_script_path)
+            return True
+
+        connection = connect_db(db_path)
+        try:
+            connection.executescript(script_content)
+            connection.commit()
+            logger.info("Script SQL ejecutado correctamente desde: %s", absolute_script_path)
+            return True
+        finally:
+            connection.close()
+    except Exception as exc:
+        logger.error("Error al ejecutar el script SQL '%s': %s", absolute_script_path, exc)
+        logger.debug(traceback.format_exc())
+        return False
+
+
 # Función para iniciar sesión con manejo de errores mejorado
 def login(driver, logger):
     """Inicia sesión en el sitio web con manejo de errores mejorado."""
