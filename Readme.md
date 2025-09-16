@@ -1,94 +1,75 @@
 # HDFull Scrapers
 
-This project contains utilities to scrape data from the HDFull website and manage the collected information.
+## Overview (English)
+HDFull Scrapers is a command-line toolkit designed to collect metadata about movies and TV series from the HDFull website. It automates browsing the catalog, extracting details for each title, and synchronising the collected information with local SQLite databases. The application is organised around interactive menus that let you configure scraping options, update existing records, or maintain the databases used by the download managers.
 
-## Windows setup
+### Key features
+- Guided menus for launching individual scrapers or running batch jobs.
+- Separate workflows for direct-download links and torrent releases.
+- Database utilities to create, migrate, or relocate the direct and torrent SQLite files.
+- Logging to monitor scraping progress and diagnose connectivity issues.
+- Command-line flags to jump directly into common tasks without navigating the full menu.
 
-A convenience batch script is included to create an isolated Python environment, install dependencies and launch the main application.
+### How it works
+1. Launch the application with `python main.py` (or via the provided helper scripts).
+2. Choose a scraper or database action from the interactive menu.
+3. The selected scraper browses HDFull, parses the result pages, and stores structured data in the configured database.
+4. Progress and errors are reported in the console and in the `logs/` directory.
 
-1. Double-click `run.bat` (or execute it from a command prompt).
-2. The script will create a `venv` virtual environment if it does not yet exist.
-3. Required packages from `requirements.txt` will be installed.
-4. Finally the script runs `python main.py`. Any command-line arguments passed to the batch file are forwarded to the Python program.
+### Project layout
+- `main.py`: Entry point that renders the menus and handles command-line arguments.
+- `Scripts/`: Helper modules and individual scrapers.
+- `resources/`: Static assets used by the scrapers.
+- `logs/`: Output directory for execution logs (created at runtime).
+- `run.bat`: Windows helper to bootstrap a virtual environment and launch the app.
 
-Example:
-
-```bat
-run.bat --series --start-page 2
-```
-
-This executes the series scraper starting at page 2.
-
-To jump straight into the scraper/update menus without going through the top
-level application menu use:
-
-```bat
-run.bat --scrapers-menu
-```
-
-## Manual setup (non-Windows)
-
-If you are running the project on another platform, perform the steps manually:
-
+### Quick start
 ```bash
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
 
-## Database setup
-
-
-When running `python main.py` without command-line options, an interactive menu is shown. Under **Database Setup** you can create the direct download and torrent databases individually or both at once. The menu also allows changing the paths of the direct and torrent databases and running custom SQL scripts. A separate **Run Scrapers** option exposes the previous Direct and Torrent scraper menus in a single place.
-
-The scraper/update menus can also be opened directly from the command line:
+To skip the main menu and open the scraping shortcuts directly, run:
 
 ```bash
 python main.py --scrapers-menu
 ```
 
+## Resumen (Español)
+HDFull Scrapers es un conjunto de herramientas de línea de comandos que recopila metadatos de películas y series desde el sitio web HDFull. Automatiza la navegación por el catálogo, extrae la información de cada título y sincroniza los datos con bases de datos SQLite locales. La aplicación se organiza en menús interactivos que permiten configurar los scrapers, actualizar registros existentes o mantener las bases de datos utilizadas por los gestores de descargas.
 
-## Repository structure
+### Características principales
+- Menús guiados para ejecutar scrapers individuales o trabajos por lotes.
+- Flujos independientes para enlaces de descarga directa y lanzamientos torrent.
+- Utilidades de base de datos para crear, migrar o cambiar la ubicación de los archivos SQLite de directos y torrents.
+- Registro de actividad para supervisar el progreso y diagnosticar problemas de conectividad.
+- Parámetros por consola para acceder rápidamente a tareas comunes sin recorrer todo el menú.
 
-- `main.py` – Entry point that displays the application menu or accepts command line arguments.
-- `Scripts/` – Helper modules used by the scraper.
-- `run.bat` – Windows helper to bootstrap the environment and execute `main.py`.
+### Funcionamiento
+1. Inicia la aplicación con `python main.py` (o mediante los scripts auxiliares incluidos).
+2. Elige un scraper o una acción de base de datos desde el menú interactivo.
+3. El scraper seleccionado recorre HDFull, interpreta las páginas de resultados y guarda los datos estructurados en la base configurada.
+4. El progreso y los errores se muestran en la consola y se almacenan en el directorio `logs/`.
 
-Logs and the virtual environment are ignored by git.
+### Estructura del proyecto
+- `main.py`: Punto de entrada que muestra los menús y gestiona los argumentos de línea de comandos.
+- `Scripts/`: Módulos auxiliares y scrapers individuales.
+- `resources/`: Archivos estáticos utilizados por los scrapers.
+- `logs/`: Carpeta creada en tiempo de ejecución para los registros.
+- `run.bat`: Script de Windows que prepara el entorno virtual y ejecuta la aplicación.
 
-## Running scrapers in batch
-
-The helper script `Scripts/run_all.py` executes multiple scrapers sequentially. The
-`--scraper` option selects between the direct-download update scripts and the
-torrent scrapers:
-
+### Inicio rápido
 ```bash
-python Scripts/run_all.py --scraper direct
-python Scripts/run_all.py --scraper torrent
+python -m venv venv
+source venv/bin/activate  # En Windows usa: venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
 ```
 
-Arguments like `--db-path`, `--max-pages` and `--max-workers` are only applicable
-to the direct scrapers.
+Para acceder directamente a los atajos de scraping sin pasar por el menú principal, ejecuta:
 
-## Building a standalone executable
-
-The project can be packaged into a single executable that runs from the console
-using [PyInstaller](https://pyinstaller.org/).
-
-1. Install PyInstaller (inside the virtual environment if desired):
-
-   ```bash
-   pip install pyinstaller
-   ```
-
-2. From the project root, build the application using the provided specification
-   file:
-
-   ```bash
-   pyinstaller hdfull.spec
-   ```
-
-The generated executable will be located in `dist/HdfullScrappers/`. Execute it
-from a command prompt to access the same menus available when running
-`python main.py`.
+```bash
+python main.py --scrapers-menu
+```
