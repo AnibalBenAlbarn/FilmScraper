@@ -13,7 +13,7 @@ import urllib3
 
 #ver:1.05
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from scraper_utils import PROJECT_ROOT, get_shutdown_event
+from .scraper_utils import PROJECT_ROOT, get_shutdown_event, TORRENT_DB_PATH
 
 shutdown_event = get_shutdown_event()
 
@@ -39,11 +39,6 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://dontorrent.lighting/pelicula/"
 
 # Path to the database (shared configuration)
-try:  # pragma: no cover - compatible con ejecución como script o módulo
-    from .scraper_utils import TORRENT_DB_PATH
-except ImportError:  # pragma: no cover
-    from scraper_utils import TORRENT_DB_PATH
-
 db_path = TORRENT_DB_PATH
 
 # Count existing torrent files for a given type
