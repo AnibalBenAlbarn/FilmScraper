@@ -15,14 +15,14 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
 # Importar utilidades compartidas
-from scraper_utils import (
+from .scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
     save_progress, load_progress, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
     insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     log_link_insertion, is_url_completed
 )
-from graceful_shutdown import GracefulShutdown
+from .graceful_shutdown import GracefulShutdown
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_episodes_premiere"

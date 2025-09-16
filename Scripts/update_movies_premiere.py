@@ -3,15 +3,15 @@ import argparse
 import traceback
 from datetime import datetime
 
-from scraper_utils import (
+from .scraper_utils import (
     setup_logger, create_driver, login, setup_database,
     save_progress, load_progress, clear_cache,
     BASE_URL, PROJECT_ROOT, is_url_completed, mark_url_completed
 )
 
 # Reutilizamos funciones del script de películas actualizadas
-import update_movies_updated as movies_updated
-from graceful_shutdown import GracefulShutdown
+from . import update_movies_updated as movies_updated
+from .graceful_shutdown import GracefulShutdown
 
 SCRIPT_NAME = "update_movies_premiere"
 LOG_FILE = f"{SCRIPT_NAME}.log"

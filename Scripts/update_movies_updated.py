@@ -13,13 +13,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
 # Importar utilidades compartidas
-from scraper_utils import (
+from .scraper_utils import (
     setup_logger, create_driver, connect_db, login, setup_database,
     save_progress, load_progress, clear_cache, movie_exists,
     insert_or_update_movie, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     insert_links_batch, is_url_completed, mark_url_completed
 )
-from graceful_shutdown import GracefulShutdown
+from .graceful_shutdown import GracefulShutdown
 
 # Configuración específica para este script
 SCRIPT_NAME = "update_movies_updated"
