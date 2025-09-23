@@ -41,6 +41,9 @@ PASSWORD = 'Rolankor_09'
 MAX_WORKERS = 4  # Número máximo de workers para procesamiento paralelo
 MAX_RETRIES = 3  # Número máximo de reintentos para cada elemento
 
+# Configuración de caché
+CACHE_ENABLED = True
+
 # Ruta del proyecto
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,11 +61,13 @@ if os.path.exists(CONFIG_FILE):
             data = json.load(f)
         DB_PATH = data.get('db_path', DB_PATH)
         TORRENT_DB_PATH = data.get('torrent_db_path', TORRENT_DB_PATH)
+        MAX_WORKERS = data.get('max_workers', MAX_WORKERS)
+        MAX_RETRIES = data.get('max_retries', MAX_RETRIES)
+        CACHE_ENABLED = data.get('cache_enabled', CACHE_ENABLED)
     except Exception:
         pass
 
 # Configuración de caché para reducir consultas repetidas
-CACHE_ENABLED = True
 CACHE = {
     'servers': {},
     'qualities': {},
@@ -131,15 +136,18 @@ def _save_config(data):
         logging.getLogger(__name__).error(f"Error guardando configuración: {e}")
 
 
+def _update_config(**kwargs):
+    data = _load_config()
+    data.update(kwargs)
+    _save_config(data)
+
+
 def set_db_path(path):
     """Actualiza y persiste la ruta de la base de datos directa."""
     global DB_PATH
     DB_PATH = os.path.abspath(path)
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    data = _load_config()
-    data['db_path'] = DB_PATH
-    data.setdefault('torrent_db_path', TORRENT_DB_PATH)
-    _save_config(data)
+    _update_config(db_path=DB_PATH, torrent_db_path=TORRENT_DB_PATH)
     logging.getLogger(__name__).info(f"Ruta de base de datos establecida en: {DB_PATH}")
 
 
@@ -148,10 +156,7 @@ def set_torrent_db_path(path):
     global TORRENT_DB_PATH
     TORRENT_DB_PATH = os.path.abspath(path)
     os.makedirs(os.path.dirname(TORRENT_DB_PATH), exist_ok=True)
-    data = _load_config()
-    data['torrent_db_path'] = TORRENT_DB_PATH
-    data.setdefault('db_path', DB_PATH)
-    _save_config(data)
+    _update_config(torrent_db_path=TORRENT_DB_PATH, db_path=DB_PATH)
     logging.getLogger(__name__).info(f"Ruta de base de datos torrent establecida en: {TORRENT_DB_PATH}")
 
 
@@ -160,6 +165,7 @@ def set_max_workers(value):
     global MAX_WORKERS
     MAX_WORKERS = value
     logging.getLogger(__name__).debug(f"MAX_WORKERS establecido en {value}")
+    _update_config(max_workers=MAX_WORKERS)
 
 
 def set_max_retries(value):
@@ -167,13 +173,20 @@ def set_max_retries(value):
     global MAX_RETRIES
     MAX_RETRIES = value
     logging.getLogger(__name__).debug(f"MAX_RETRIES establecido en {value}")
+    _update_config(max_retries=MAX_RETRIES)
 
 
 def toggle_cache():
     """Activa o desactiva el uso de caché."""
+    set_cache_enabled(not CACHE_ENABLED)
+
+
+def set_cache_enabled(value):
+    """Establece el estado del uso de caché y lo persiste."""
     global CACHE_ENABLED
-    CACHE_ENABLED = not CACHE_ENABLED
+    CACHE_ENABLED = bool(value)
     logging.getLogger(__name__).debug(f"CACHE_ENABLED ahora es {CACHE_ENABLED}")
+    _update_config(cache_enabled=CACHE_ENABLED)
 
 
 # Configuración del logger
