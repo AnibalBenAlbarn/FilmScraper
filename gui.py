@@ -287,10 +287,32 @@ class ScrapersTab(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout()
-        layout.addWidget(self._build_direct_group())
-        layout.addWidget(self._build_torrent_group())
-        layout.addWidget(self._build_sequences_group())
-        layout.addStretch(1)
+
+        tabs = QTabWidget()
+
+        direct_tab = QWidget()
+        direct_layout = QVBoxLayout()
+        direct_layout.addWidget(self._build_direct_group())
+        direct_layout.addStretch(1)
+        direct_tab.setLayout(direct_layout)
+
+        torrent_tab = QWidget()
+        torrent_layout = QVBoxLayout()
+        torrent_layout.addWidget(self._build_torrent_group())
+        torrent_layout.addStretch(1)
+        torrent_tab.setLayout(torrent_layout)
+
+        sequences_tab = QWidget()
+        sequences_layout = QVBoxLayout()
+        sequences_layout.addWidget(self._build_sequences_group())
+        sequences_layout.addStretch(1)
+        sequences_tab.setLayout(sequences_layout)
+
+        tabs.addTab(direct_tab, "Direct")
+        tabs.addTab(torrent_tab, "Torrent")
+        tabs.addTab(sequences_tab, "Secuencias")
+
+        layout.addWidget(tabs)
         self.setLayout(layout)
 
     def set_running(self, running: bool) -> None:
@@ -307,7 +329,17 @@ class DatabaseTab(QWidget):
         super().__init__(parent)
         self.log_callback = log_callback
         self.direct_path_label = QLabel()
+        self.direct_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.direct_path_label.setToolTip("Ruta actual de la base de datos directa utilizada por los scrapers.")
         self.torrent_path_label = QLabel()
+        self.torrent_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.torrent_path_label.setToolTip("Ruta actual de la base de datos torrent utilizada por los scrapers.")
         self.db_logger = setup_logger("db_setup_ui", "db_setup_ui.log")
         self.sql_logger = setup_logger("sql_runner", "sql_runner.log")
         self._build_ui()
@@ -405,28 +437,36 @@ class DatabaseTab(QWidget):
             try:
                 conn = connect_db(scraper_utils.DB_PATH)
                 conn.close()
-                QMessageBox.information(self, "Base creada", "La base directa se creó y verificó correctamente.")
-                self.log_callback("Base directa creada correctamente.")
+                QMessageBox.information(
+                    self,
+                    "Base creada",
+                    f"La base directa se creó y verificó correctamente en:\n{scraper_utils.DB_PATH}",
+                )
+                self.log_callback(f"Base directa creada en {scraper_utils.DB_PATH}.")
             except Exception as exc:  # pragma: no cover - errores de conexión
                 QMessageBox.warning(self, "Error de conexión", f"No se pudo verificar la base directa: {exc}")
-                self.log_callback(f"Error al verificar la base directa: {exc}")
+                self.log_callback(f"Error al verificar la base directa en {scraper_utils.DB_PATH}: {exc}")
         else:
             QMessageBox.warning(self, "Error", "No se pudo crear la base directa.")
-            self.log_callback("No se pudo crear la base directa.")
+            self.log_callback(f"No se pudo crear la base directa en {scraper_utils.DB_PATH}.")
 
     def create_torrent_db(self) -> None:
         if create_torrent_db(scraper_utils.TORRENT_DB_PATH):
             try:
                 conn = sqlite3.connect(scraper_utils.TORRENT_DB_PATH)
                 conn.close()
-                QMessageBox.information(self, "Base creada", "La base torrent se creó y verificó correctamente.")
-                self.log_callback("Base torrent creada correctamente.")
+                QMessageBox.information(
+                    self,
+                    "Base creada",
+                    f"La base torrent se creó y verificó correctamente en:\n{scraper_utils.TORRENT_DB_PATH}",
+                )
+                self.log_callback(f"Base torrent creada en {scraper_utils.TORRENT_DB_PATH}.")
             except Exception as exc:  # pragma: no cover - errores de conexión
                 QMessageBox.warning(self, "Error de conexión", f"No se pudo verificar la base torrent: {exc}")
-                self.log_callback(f"Error al verificar la base torrent: {exc}")
+                self.log_callback(f"Error al verificar la base torrent en {scraper_utils.TORRENT_DB_PATH}: {exc}")
         else:
             QMessageBox.warning(self, "Error", "No se pudo crear la base torrent.")
-            self.log_callback("No se pudo crear la base torrent.")
+            self.log_callback(f"No se pudo crear la base torrent en {scraper_utils.TORRENT_DB_PATH}.")
 
     def create_both_db(self) -> None:
         self.create_direct_db()
@@ -537,6 +577,7 @@ class MainWindow(QMainWindow):
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Aquí aparecerá la salida de los procesos y mensajes.")
+        self.log_output.setMinimumHeight(200)
 
         controls_layout = QHBoxLayout()
         self.stop_button = QPushButton("Detener ejecución")
@@ -548,8 +589,13 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(btn_clear)
         controls_layout.addStretch(1)
 
-        central_layout.addLayout(controls_layout)
-        central_layout.addWidget(self.log_output)
+        log_group = QGroupBox("Registro de ejecución")
+        log_layout = QVBoxLayout()
+        log_layout.addLayout(controls_layout)
+        log_layout.addWidget(self.log_output)
+        log_group.setLayout(log_layout)
+
+        central_layout.addWidget(log_group)
 
         central_widget.setLayout(central_layout)
         self.setCentralWidget(central_widget)
