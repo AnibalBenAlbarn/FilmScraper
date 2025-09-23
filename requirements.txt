@@ -19,3 +19,6 @@ python-dateutil
 
 # Logging
 colorlog  # Optional, for colored console logs
+
+# UI
+PyQt6

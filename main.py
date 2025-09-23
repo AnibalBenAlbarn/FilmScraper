@@ -489,6 +489,11 @@ def parse_arguments(argv=None):
         dest='scrapers_menu',
         help='Abrir directamente el menú de scrapers y actualizaciones.'
     )
+    parser.add_argument(
+        '--gui',
+        action='store_true',
+        help='Iniciar la interfaz gráfica para gestionar los scrapers.'
+    )
 
     return parser.parse_args(argv)
 
@@ -496,6 +501,11 @@ def parse_arguments(argv=None):
 def main(argv=None):
     """Punto de entrada principal para la aplicación."""
     args = parse_arguments(argv)
+
+    if args.gui:
+        from gui import run_gui
+
+        return run_gui()
 
     if args.series:
         if args.db_path:
