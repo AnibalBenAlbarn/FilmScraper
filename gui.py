@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -31,7 +32,27 @@ from PyQt6.QtWidgets import (
 
 from Scripts import scraper_utils
 from Scripts.db_setup import create_direct_db, create_torrent_db
-from Scripts.scraper_utils import connect_db, execute_sql_script, setup_logger
+from Scripts.scraper_utils import (
+    connect_db,
+    execute_sql_script,
+    setup_logger,
+    clear_stop_request,
+    request_stop,
+)
+
+
+def _ensure_utf8_streams() -> None:
+    """Fuerza la codificación UTF-8 en stdout/stderr cuando es posible."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, AttributeError, OSError):
+                pass
+
+
+_ensure_utf8_streams()
 
 
 class ScriptRunner(QThread):
@@ -46,8 +67,15 @@ class ScriptRunner(QThread):
         self.extra_args = extra_args or []
         self._process: Optional[subprocess.Popen[str]] = None
         self._stop_requested = False
+        self._supports_graceful_stop = module_name in {
+            "torrent_dw_films_scraper",
+            "torrent_dw_series_scraper",
+        }
+        self._force_stop_attempted = False
 
     def run(self) -> None:  # type: ignore[override]
+        clear_stop_request()
+
         cmd = [
             sys.executable,
             "-m",
@@ -57,14 +85,19 @@ class ScriptRunner(QThread):
         self.output.emit(f"\n▶ Ejecutando: {' '.join(cmd)}")
 
         try:
-            self._process = subprocess.Popen(
-                cmd,
-                cwd=scraper_utils.PROJECT_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            popen_kwargs: dict = {
+                "cwd": scraper_utils.PROJECT_ROOT,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+                "bufsize": 1,
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+            if os.name == "nt":  # pragma: no cover - dependiente de plataforma
+                popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+            self._process = subprocess.Popen(cmd, **popen_kwargs)
         except Exception as exc:  # pragma: no cover - errores de entorno
             self.output.emit(f"[ERROR] No se pudo iniciar el proceso: {exc}")
             self.finished.emit(False)
@@ -91,12 +124,26 @@ class ScriptRunner(QThread):
 
     def stop(self) -> None:
         self._stop_requested = True
+        request_stop()
         if self._process and self._process.poll() is None:
+            if self._supports_graceful_stop and not self._force_stop_attempted:
+                self._force_stop_attempted = True
+                self.output.emit("[INFO] Solicitud de parada recibida. Esperando a que termine el elemento actual…")
+                return
+
+            if self._supports_graceful_stop and self._force_stop_attempted:
+                self.output.emit("[INFO] Forzando la detención del proceso…")
+
             try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
+                if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+                    self._process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    self._process.send_signal(signal.SIGINT)
+            except Exception:
+                try:
+                    self._process.terminate()
+                except Exception:
+                    pass
 
 
 class ScrapersTab(QWidget):
@@ -559,6 +606,12 @@ class MainWindow(QMainWindow):
 
         self.logger = setup_logger("gui", "gui.log")
         self.runner: Optional[ScriptRunner] = None
+        self.progress_label = QLabel("Listo")
+        self.progress_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.progress_label.setMinimumWidth(320)
 
         self.tabs = QTabWidget()
         self.scrapers_tab = ScrapersTab(self.append_output)
@@ -601,40 +654,98 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         status_bar = QStatusBar()
+        status_bar.addPermanentWidget(self.progress_label, 1)
         self.setStatusBar(status_bar)
 
     def append_output(self, message: str) -> None:
-        self.logger.info(message)
-        self.log_output.append(message)
+        encoding = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+        safe_message = message
+        try:
+            message.encode(encoding)
+        except UnicodeEncodeError:
+            safe_message = message.encode(encoding, errors="replace").decode(encoding)
+
+        try:
+            self.logger.info(safe_message)
+        except UnicodeEncodeError:
+            fallback = safe_message.encode("ascii", errors="replace").decode("ascii")
+            self.logger.info(fallback)
+
+        display_text = message.rstrip("\n")
+        self.log_output.append(display_text)
         self.log_output.moveCursor(QTextCursor.MoveOperation.End)
+        self._update_progress_indicator(message)
+
+    @staticmethod
+    def _strip_log_prefix(text: str) -> str:
+        stripped = text.strip()
+        parts = stripped.split(" - ", 2)
+        if len(parts) == 3 and parts[1].upper() in {"INFO", "ERROR", "WARNING", "DEBUG", "CRITICAL"}:
+            return parts[2]
+        return stripped
+
+    def _update_progress_indicator(self, message: str) -> None:
+        payload = self._strip_log_prefix(message)
+        if not payload:
+            return
+
+        lower_payload = payload.lower()
+        if "extrayendo:" in payload:
+            info = payload.split("Extrayendo:", 1)[1].strip()
+            self.progress_label.setText(f"Extrayendo: {info}")
+        elif "progreso guardado:" in payload:
+            info = payload.split("Progreso guardado:", 1)[1].strip()
+            self.progress_label.setText(f"Progreso guardado: {info}")
+        elif payload.startswith("Guardado:"):
+            self.progress_label.setText(payload.strip())
+        elif "proceso detenido" in lower_payload:
+            self.progress_label.setText("Detenido por el usuario.")
+        elif "proceso finalizado" in lower_payload or "[ok]" in lower_payload:
+            self.progress_label.setText("Proceso finalizado.")
 
     def start_script(self, module: str, args: Optional[List[str]]) -> None:
         if self.runner and self.runner.isRunning():
             QMessageBox.warning(self, "Proceso en ejecución", "Ya hay un proceso en marcha. Deténlo antes de iniciar otro.")
             return
 
+        clear_stop_request()
         self.runner = ScriptRunner(module, args)
         self.runner.output.connect(self.append_output)
         self.runner.finished.connect(self.on_script_finished)
         self.scrapers_tab.set_running(True)
         self.stop_button.setEnabled(True)
-        self.statusBar().showMessage(f"Ejecutando {module}…")
+        status_message = f"Ejecutando {module}…"
+        self.statusBar().showMessage(status_message)
+        self.progress_label.setText(status_message)
         self.runner.start()
 
     def stop_current_script(self) -> None:
         if self.runner and self.runner.isRunning():
-            self.append_output("Deteniendo proceso en ejecución…")
+            self.append_output(
+                "Deteniendo proceso en ejecución… se esperará a que finalice el elemento actual."
+            )
+            self.statusBar().showMessage("Deteniendo ejecución tras completar el elemento actual…")
+            self.progress_label.setText("Deteniendo tras completar el elemento actual…")
             self.runner.stop()
         else:
             self.stop_button.setEnabled(False)
 
     def on_script_finished(self, success: bool) -> None:
+        runner = self.runner
         self.scrapers_tab.set_running(False)
         self.stop_button.setEnabled(False)
+
+        was_stop = bool(runner and runner._stop_requested)
         if success:
             self.statusBar().showMessage("Proceso finalizado correctamente.", 5000)
+            self.progress_label.setText("Proceso finalizado.")
+        elif was_stop:
+            self.statusBar().showMessage("Proceso detenido por el usuario.", 5000)
+            self.progress_label.setText("Detenido por el usuario.")
         else:
             self.statusBar().showMessage("Proceso finalizado con errores.", 5000)
+
+        clear_stop_request()
         self.runner = None
 
 

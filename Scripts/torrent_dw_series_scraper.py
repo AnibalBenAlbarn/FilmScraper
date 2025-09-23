@@ -14,7 +14,13 @@ import urllib3
 
 #ver:1.05
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from .scraper_utils import PROJECT_ROOT, get_shutdown_event, TORRENT_DB_PATH
+from .scraper_utils import (
+    PROJECT_ROOT,
+    get_shutdown_event,
+    TORRENT_DB_PATH,
+    is_stop_requested,
+    clear_stop_request,
+)
 
 shutdown_event = get_shutdown_event()
 
@@ -439,6 +445,7 @@ def insert_data(db_conn, series_title, season_number, quality, episodes):
 def scrape_series(start_id=1, max_consecutive_failures=10):
     """Itera sobre los IDs de las series y extrae los datos."""
     # Cargar progreso anterior si existe
+    clear_stop_request()
     progress_data = load_progress()
     current_id = progress_data.get("current_id", start_id)
     total_saved = progress_data.get("total_saved", 0)
@@ -448,9 +455,15 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
 
     conn = sqlite3.connect(db_path)
     consecutive_failures = 0
+    stop_requested = False
 
     try:
-        while not shutdown_event.is_set():
+        while True:
+            if is_stop_requested():
+                stop_requested = True
+                logger.info("Señal de parada detectada. Finalizando después del ID %s", current_id - 1)
+                break
+
             series_url = f"{BASE_URL}{current_id}/{current_id}/"
             logger.info(f"Extrayendo: {series_url}")
 
@@ -487,19 +500,35 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
             finally:
                 next_id = current_id + 1
                 save_progress(next_id, total_saved)
-                sleep_time = 1 + random.random() * 2
-                time.sleep(sleep_time)
-                current_id = next_id
+
+            if is_stop_requested():
+                stop_requested = True
+                logger.info("Solicitud de parada recibida. Se detendrá antes de continuar con el siguiente ID.")
+                break
+
+            sleep_time = 1 + random.random() * 2
+            time.sleep(sleep_time)
+            current_id = next_id
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
         shutdown_event.set()
+        stop_requested = True
     except Exception as e:
         logger.critical(f"Error crítico: {str(e)}")
     finally:
         # Guardar progreso final
         save_progress(next_id, total_saved)
-        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} archivos de torrent en la base de datos.")
+        if stop_requested:
+            logger.info(
+                "Proceso detenido por solicitud del usuario. Último ID procesado: %s",
+                max(current_id, next_id - 1),
+            )
+        else:
+            logger.info(
+                f"Proceso completado o interrumpido. Se guardaron {total_saved} archivos de torrent en la base de datos."
+            )
         conn.close()
+        clear_stop_request()
 
 
 def main():
