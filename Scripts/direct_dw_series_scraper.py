@@ -71,6 +71,45 @@ LOG_FILE = f"{SCRIPT_NAME}.log"
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "progress", "series_direct_progress.json")
 SERIES_BASE_URL = f"{BASE_URL}/series/imdb_rating"
 
+
+def _reset_progress_from_page(progress_data, start_page):
+    """Elimina el progreso de páginas iguales o posteriores a start_page."""
+    try:
+        threshold = int(start_page)
+    except (TypeError, ValueError):
+        return progress_data
+
+    removed_urls = set()
+    for key in list(progress_data.get('pages_odd', {}).keys()):
+        try:
+            page_num = int(key)
+        except (TypeError, ValueError):
+            continue
+        if page_num >= threshold:
+            page_info = progress_data['pages_odd'].pop(key)
+            removed_urls.update(page_info.get('urls', []))
+
+    for key in list(progress_data.get('pages_even', {}).keys()):
+        try:
+            page_num = int(key)
+        except (TypeError, ValueError):
+            continue
+        if page_num >= threshold:
+            page_info = progress_data['pages_even'].pop(key)
+            removed_urls.update(page_info.get('urls', []))
+
+    if removed_urls:
+        odd_urls = progress_data.get('processed_urls_odd', [])
+        progress_data['processed_urls_odd'] = [url for url in odd_urls if url not in removed_urls]
+        even_urls = progress_data.get('processed_urls_even', [])
+        progress_data['processed_urls_even'] = [url for url in even_urls if url not in removed_urls]
+
+    for key in ('last_series_url', 'last_series_title'):
+        if key in progress_data:
+            progress_data.pop(key)
+
+    return progress_data
+
 # Obtener total de enlaces guardados para un tipo de media
 def get_total_saved_links(content_type):
     try:
@@ -1600,7 +1639,7 @@ Este es un mensaje automático generado por el sistema de actualización de seri
 
 
 # Función principal para procesar todas las series
-def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=None):
+def process_all_series(start_page=None, max_pages=None, db_path=None, max_workers=None):
     """Procesa todas las series disponibles."""
     start_time = datetime.now()
     logger.info(f"Iniciando procesamiento de series: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1608,6 +1647,15 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
     # Usar el número de workers especificado o el valor por defecto
     if max_workers is None:
         max_workers = MAX_WORKERS
+
+    explicit_start = start_page is not None
+    if start_page is not None:
+        try:
+            effective_start = max(1, int(start_page))
+        except (TypeError, ValueError):
+            effective_start = 1
+    else:
+        effective_start = 1
 
     try:
         # Configurar la base de datos
@@ -1618,6 +1666,12 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
 
         # Cargar progreso anterior y sincronizar total de enlaces
         progress_data = load_progress(PROGRESS_FILE, {})
+        if explicit_start:
+            progress_data = _reset_progress_from_page(progress_data, effective_start)
+            logger.info(
+                "Progreso reiniciado manualmente desde la página %s. Las páginas posteriores se volverán a procesar.",
+                effective_start,
+            )
         global total_saved
         progress_data['total_saved'] = get_total_saved_links('serie')
         total_saved = progress_data['total_saved']
@@ -1704,7 +1758,7 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
         # Iniciar Worker 1 (Extractor de URLs de páginas impares)
         thread = threading.Thread(
             target=worker1_url_extractor,
-            args=(driver_odd, progress_data, start_page, max_pages),
+            args=(driver_odd, progress_data, effective_start, max_pages),
             name="Worker1"
         )
         threads.append(thread)
@@ -1713,7 +1767,7 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
         # Iniciar Worker 4 (Extractor de URLs de páginas pares)
         thread = threading.Thread(
             target=worker4_url_extractor,
-            args=(driver_even, progress_data, start_page + 1, max_pages),
+            args=(driver_even, progress_data, effective_start + 1, max_pages),
             name="Worker4"
         )
         threads.append(thread)
@@ -1771,7 +1825,7 @@ def process_all_series(start_page=1, max_pages=None, db_path=None, max_workers=N
 if __name__ == "__main__":
     # Configurar argumentos de línea de comandos
     parser = argparse.ArgumentParser(description='Procesamiento de series por rating IMDB')
-    parser.add_argument('--start-page', type=int, default=1, help='Página inicial para comenzar el procesamiento')
+    parser.add_argument('--start-page', type=int, help='Página inicial para comenzar el procesamiento')
     parser.add_argument('--max-pages', type=int, help='Número máximo de páginas a procesar')
     parser.add_argument('--max-workers', type=int, help='Número máximo de workers para procesamiento paralelo')
     parser.add_argument('--db-path', type=str, help='Ruta a la base de datos SQLite')

@@ -1,3 +1,4 @@
+import argparse
 import requests
 from bs4 import BeautifulSoup
 import sqlite3
@@ -442,16 +443,39 @@ def insert_data(db_conn, series_title, season_number, quality, episodes):
         return 0
 
 
-def scrape_series(start_id=1, max_consecutive_failures=10):
+def scrape_series(start_id=None, max_consecutive_failures=10, resume=True):
     """Itera sobre los IDs de las series y extrae los datos."""
-    # Cargar progreso anterior si existe
     clear_stop_request()
-    progress_data = load_progress()
-    current_id = progress_data.get("current_id", start_id)
-    total_saved = progress_data.get("total_saved", 0)
+
+    if resume:
+        progress_data = load_progress()
+    else:
+        progress_data = {
+            "current_id": 1,
+            "total_saved": get_total_saved_count("series"),
+            "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    if start_id is not None:
+        try:
+            current_id = max(1, int(start_id))
+        except (TypeError, ValueError):
+            current_id = 1
+    else:
+        try:
+            current_id = max(1, int(progress_data.get("current_id", 1)))
+        except (TypeError, ValueError):
+            current_id = 1
+
+    total_saved = progress_data.get("total_saved", get_total_saved_count("series"))
     next_id = current_id
 
-    logger.info(f"Iniciando scraping desde ID: {current_id}, archivos guardados anteriormente: {total_saved}")
+    logger.info(
+        "Iniciando scraping desde ID: %s, archivos guardados anteriormente: %s (reanudar=%s)",
+        current_id,
+        total_saved,
+        resume,
+    )
 
     conn = sqlite3.connect(db_path)
     consecutive_failures = 0
@@ -532,12 +556,49 @@ def scrape_series(start_id=1, max_consecutive_failures=10):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Scraper de series torrent")
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        help="ID/página inicial desde la que comenzar el procesamiento",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reanudar desde el último progreso guardado (por defecto se reanuda)",
+    )
+    parser.add_argument(
+        "--reset-progress",
+        action="store_true",
+        help="Eliminar el archivo de progreso antes de iniciar",
+    )
+    parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=10,
+        help="Número máximo de fallos consecutivos permitidos",
+    )
+
+    args = parser.parse_args()
+
     try:
-        # Inicializar la base de datos
+        if args.reset_progress and os.path.exists(progress_file):
+            os.remove(progress_file)
+            logger.info("Progreso reiniciado manualmente.")
+
         initialize_database()
 
-        # Ejecutar el scrapeo
-        scrape_series(start_id=1, max_consecutive_failures=10)
+        resume = True
+        if args.reset_progress or args.start_page is not None:
+            resume = False
+        elif args.resume:
+            resume = True
+
+        scrape_series(
+            start_id=args.start_page,
+            max_consecutive_failures=args.max_failures,
+            resume=resume,
+        )
     except Exception as e:
         logger.critical(f"Error crítico en main: {str(e)}")
     finally:

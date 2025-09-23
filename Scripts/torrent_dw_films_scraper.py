@@ -1,3 +1,4 @@
+import argparse
 import os
 import json
 import requests
@@ -356,17 +357,39 @@ def save_to_db(movie_data):
         return False
 
 
-def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
+def scrape_movies(start_id=None, end_id=35000, max_consecutive_failures=10, resume=True):
     """Itera sobre los IDs de las películas y extrae los datos."""
     clear_stop_request()
 
-    # Cargar progreso anterior si existe
-    progress_data = load_progress()
-    current_id = progress_data.get("current_id", start_id)
-    total_saved = progress_data.get("total_saved", 0)
+    if resume:
+        progress_data = load_progress()
+    else:
+        progress_data = {
+            "current_id": 1,
+            "total_saved": get_total_saved_count("movie"),
+            "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    if start_id is not None:
+        try:
+            current_id = max(1, int(start_id))
+        except (TypeError, ValueError):
+            current_id = 1
+    else:
+        try:
+            current_id = max(1, int(progress_data.get("current_id", 1)))
+        except (TypeError, ValueError):
+            current_id = 1
+
+    total_saved = progress_data.get("total_saved", get_total_saved_count("movie"))
     next_id = current_id
 
-    logger.info(f"Iniciando scraping desde ID: {current_id}, archivos guardados anteriormente: {total_saved}")
+    logger.info(
+        "Iniciando scraping desde ID: %s, archivos guardados anteriormente: %s (reanudar=%s)",
+        current_id,
+        total_saved,
+        resume,
+    )
 
     consecutive_failures = 0
     stop_requested = False
@@ -438,12 +461,56 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Scraper de películas torrent")
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        help="ID/página inicial desde la que comenzar el procesamiento",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reanudar desde el último progreso guardado (por defecto se reanuda)",
+    )
+    parser.add_argument(
+        "--reset-progress",
+        action="store_true",
+        help="Eliminar el archivo de progreso antes de iniciar",
+    )
+    parser.add_argument(
+        "--end-page",
+        type=int,
+        default=35000,
+        help="ID/página final a procesar",
+    )
+    parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=10,
+        help="Número máximo de fallos consecutivos permitidos",
+    )
+
+    args = parser.parse_args()
+
     try:
-        # Inicializar la base de datos
+        if args.reset_progress and os.path.exists(progress_file):
+            os.remove(progress_file)
+            logger.info("Progreso reiniciado manualmente.")
+
         initialize_database()
 
-        # Ejecutar el scrapeo
-        scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10)
+        resume = True
+        if args.reset_progress or args.start_page is not None:
+            resume = False
+        elif args.resume:
+            resume = True
+
+        scrape_movies(
+            start_id=args.start_page,
+            end_id=args.end_page,
+            max_consecutive_failures=args.max_failures,
+            resume=resume,
+        )
 
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")

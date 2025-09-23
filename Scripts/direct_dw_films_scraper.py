@@ -754,7 +754,10 @@ def extract_all_movies(start_page=None, db_path=None):
     global total_saved
     page_number, last_title, last_index, total_saved_local = load_progress()
     if start_page is not None:
-        page_number = start_page
+        try:
+            page_number = max(1, int(start_page))
+        except (TypeError, ValueError):
+            page_number = 1
         last_title = None
         last_index = -1
     with total_saved_lock:

@@ -7,7 +7,8 @@ import signal
 import sqlite3
 import subprocess
 import sys
-from typing import Callable, List, Optional
+import json
+from typing import Callable, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QTextCursor
@@ -39,6 +40,19 @@ from Scripts.scraper_utils import (
     clear_stop_request,
     request_stop,
 )
+
+
+PROGRESS_DIR = os.path.join(scraper_utils.PROJECT_ROOT, "progress")
+DIRECT_MOVIES_PROGRESS_FILE = os.path.join(PROGRESS_DIR, "movies_direct_progress.json")
+DIRECT_SERIES_PROGRESS_FILE = os.path.join(PROGRESS_DIR, "series_direct_progress.json")
+TORRENT_MOVIES_PROGRESS_FILE = os.path.join(PROGRESS_DIR, "movies_torrent_progress.json")
+TORRENT_SERIES_PROGRESS_FILE = os.path.join(PROGRESS_DIR, "series_torrent_progress.json")
+UPDATE_PROGRESS_FILES = {
+    "update_movies_premiere": os.path.join(PROGRESS_DIR, "update_movies_premiere_progress.json"),
+    "update_movies_updated": os.path.join(PROGRESS_DIR, "update_movies_updated_progress.json"),
+    "update_episodes_premiere": os.path.join(PROGRESS_DIR, "update_episodes_premiere_progress.json"),
+    "update_episodes_updated": os.path.join(PROGRESS_DIR, "update_episodes_updated_progress.json"),
+}
 
 
 def _ensure_utf8_streams() -> None:
@@ -156,6 +170,15 @@ class ScrapersTab(QWidget):
         self.log_callback = log_callback
         self._buttons: List[QPushButton] = []
         self._spinboxes: List[QSpinBox] = []
+        self.direct_movies_spin: Optional[QSpinBox] = None
+        self.direct_series_spin: Optional[QSpinBox] = None
+        self.torrent_movies_spin: Optional[QSpinBox] = None
+        self.torrent_series_spin: Optional[QSpinBox] = None
+        self.direct_movies_progress_label: Optional[QLabel] = None
+        self.direct_series_progress_label: Optional[QLabel] = None
+        self.torrent_movies_progress_label: Optional[QLabel] = None
+        self.torrent_series_progress_label: Optional[QLabel] = None
+        self.update_progress_labels: Dict[str, QLabel] = {}
         self._build_ui()
 
     def _register_button(self, button: QPushButton) -> None:
@@ -168,6 +191,206 @@ class ScrapersTab(QWidget):
         if args is None:
             args = []
         self.run_script_requested.emit(module, args)
+
+    @staticmethod
+    def _load_json(path: str) -> Optional[Dict[str, object]]:
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_section(texts: List[str]) -> str:
+        cleaned = [text for text in texts if text]
+        return " • ".join(cleaned) if cleaned else "Sin registros disponibles."
+
+    @staticmethod
+    def _extract_last_series_page(progress_data: Dict[str, object]) -> Optional[Dict[str, Optional[object]]]:
+        best_page: Optional[int] = None
+        best_timestamp: Optional[str] = None
+        for key in ("pages_odd", "pages_even"):
+            pages = progress_data.get(key, {})
+            if not isinstance(pages, dict):
+                continue
+            for page_key, info in pages.items():
+                if not isinstance(info, dict) or not info.get("processed"):
+                    continue
+                try:
+                    page_num = int(page_key)
+                except (TypeError, ValueError):
+                    continue
+                timestamp = info.get("timestamp")
+                if best_page is None or page_num > best_page or (
+                    page_num == best_page and str(timestamp or "") > str(best_timestamp or "")
+                ):
+                    best_page = page_num
+                    best_timestamp = timestamp if isinstance(timestamp, str) else str(timestamp or "")
+        if best_page is None:
+            return None
+        return {"page": best_page, "timestamp": best_timestamp}
+
+    def _reset_progress(self, path: str, description: str) -> None:
+        if not path:
+            return
+
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                QMessageBox.information(
+                    self,
+                    "Progreso reiniciado",
+                    f"Se eliminó el progreso almacenado de {description}.",
+                )
+                self.log_callback(f"Progreso de {description} reiniciado.")
+            else:
+                QMessageBox.information(
+                    self,
+                    "Progreso reiniciado",
+                    f"No se encontró progreso previo para {description}.",
+                )
+                self.log_callback(f"No se encontró progreso previo para {description}.")
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"No se pudo reiniciar el progreso de {description}: {exc}",
+            )
+            self.log_callback(f"Error al reiniciar el progreso de {description}: {exc}")
+            return
+
+        self.refresh_progress_info()
+
+    def refresh_progress_info(self) -> None:
+        self._update_direct_movies_info()
+        self._update_direct_series_info()
+        self._update_torrent_movies_info()
+        self._update_torrent_series_info()
+        self._update_updates_info()
+
+    def _update_direct_movies_info(self) -> None:
+        if not self.direct_movies_progress_label or not self.direct_movies_spin:
+            return
+
+        data = self._load_json(DIRECT_MOVIES_PROGRESS_FILE) or {}
+        page_number = data.get("page_number")
+        try:
+            page_value = max(1, int(page_number))
+        except (TypeError, ValueError):
+            page_value = 1
+
+        last_title = data.get("last_movie_title")
+        last_index = data.get("last_movie_index")
+        if last_title:
+            if isinstance(last_index, int) and last_index >= 0:
+                title_text = f"Última película: {last_title} (índice {last_index})"
+            else:
+                title_text = f"Última película: {last_title}"
+        else:
+            title_text = "Última película: sin datos"
+
+        total_saved = data.get("total_saved")
+        total_text = f"Enlaces guardados: {total_saved}" if isinstance(total_saved, int) else ""
+
+        page_text = f"Siguiente página: {page_value}"
+
+        self.direct_movies_progress_label.setText(
+            self._format_section([page_text, title_text, total_text])
+        )
+        self.direct_movies_spin.setValue(page_value)
+
+    def _update_direct_series_info(self) -> None:
+        if not self.direct_series_progress_label or not self.direct_series_spin:
+            return
+
+        data = self._load_json(DIRECT_SERIES_PROGRESS_FILE) or {}
+        page_info = self._extract_last_series_page(data)
+        last_title = data.get("last_series_title")
+        total_saved = data.get("total_saved")
+
+        if page_info:
+            try:
+                page_value = max(1, int(page_info.get("page", 1)))
+            except (TypeError, ValueError):
+                page_value = 1
+            page_text = f"Última página completada: {page_value}"
+            timestamp = page_info.get("timestamp")
+            timestamp_text = f"Actualizado: {timestamp}" if timestamp else ""
+        else:
+            page_value = 1
+            page_text = "Última página completada: sin datos"
+            timestamp_text = ""
+
+        title_text = f"Última serie: {last_title}" if last_title else "Última serie: sin datos"
+        total_text = f"Enlaces guardados: {total_saved}" if isinstance(total_saved, int) else ""
+
+        self.direct_series_progress_label.setText(
+            self._format_section([page_text, title_text, timestamp_text, total_text])
+        )
+        self.direct_series_spin.setValue(max(1, page_value))
+
+    def _update_torrent_movies_info(self) -> None:
+        if not self.torrent_movies_progress_label or not self.torrent_movies_spin:
+            return
+
+        data = self._load_json(TORRENT_MOVIES_PROGRESS_FILE) or {}
+        current_id = data.get("current_id")
+        try:
+            next_id = max(1, int(current_id))
+        except (TypeError, ValueError):
+            next_id = 1
+        last_id = next_id - 1 if next_id > 1 else None
+        total_saved = data.get("total_saved")
+        last_update = data.get("last_update")
+
+        texts = [f"Siguiente ID: {next_id}"]
+        if last_id:
+            texts.append(f"Último ID completado: {last_id}")
+        if isinstance(total_saved, int):
+            texts.append(f"Registros guardados: {total_saved}")
+        if last_update:
+            texts.append(f"Actualizado: {last_update}")
+
+        self.torrent_movies_progress_label.setText(self._format_section(texts))
+        self.torrent_movies_spin.setValue(next_id)
+
+    def _update_torrent_series_info(self) -> None:
+        if not self.torrent_series_progress_label or not self.torrent_series_spin:
+            return
+
+        data = self._load_json(TORRENT_SERIES_PROGRESS_FILE) or {}
+        current_id = data.get("current_id")
+        try:
+            next_id = max(1, int(current_id))
+        except (TypeError, ValueError):
+            next_id = 1
+        last_id = next_id - 1 if next_id > 1 else None
+        total_saved = data.get("total_saved")
+        last_update = data.get("last_update")
+
+        texts = [f"Siguiente ID: {next_id}"]
+        if last_id:
+            texts.append(f"Último ID completado: {last_id}")
+        if isinstance(total_saved, int):
+            texts.append(f"Registros guardados: {total_saved}")
+        if last_update:
+            texts.append(f"Actualizado: {last_update}")
+
+        self.torrent_series_progress_label.setText(self._format_section(texts))
+        self.torrent_series_spin.setValue(next_id)
+
+    def _update_updates_info(self) -> None:
+        for module, label in self.update_progress_labels.items():
+            path = UPDATE_PROGRESS_FILES.get(module)
+            data = self._load_json(path) or {}
+            last_update = data.get("last_update")
+            if last_update:
+                text = f"Última ejecución: {last_update}"
+            else:
+                text = "Última ejecución: sin registros"
+            label.setText(text)
 
     def _build_direct_group(self) -> QGroupBox:
         group = QGroupBox("Scrapers directos")
@@ -186,6 +409,7 @@ class ScrapersTab(QWidget):
         movies_start_spin.setRange(1, 9999)
         movies_start_spin.setValue(1)
         self._register_spinbox(movies_start_spin)
+        self.direct_movies_spin = movies_start_spin
         btn_movies_from_page = QPushButton("Ejecutar desde página")
         btn_movies_from_page.clicked.connect(
             lambda: self._emit_run(
@@ -200,6 +424,18 @@ class ScrapersTab(QWidget):
 
         movies_layout.addWidget(btn_movies_normal)
         movies_layout.addLayout(movies_start_layout)
+        self.direct_movies_progress_label = QLabel("Sin registros disponibles.")
+        self.direct_movies_progress_label.setWordWrap(True)
+        movies_layout.addWidget(self.direct_movies_progress_label)
+        btn_movies_reset = QPushButton("Reiniciar progreso")
+        btn_movies_reset.clicked.connect(
+            lambda: self._reset_progress(
+                DIRECT_MOVIES_PROGRESS_FILE,
+                "películas directas",
+            )
+        )
+        self._register_button(btn_movies_reset)
+        movies_layout.addWidget(btn_movies_reset)
         movies_box.setLayout(movies_layout)
 
         # Series directas
@@ -215,6 +451,7 @@ class ScrapersTab(QWidget):
         series_start_spin.setRange(1, 9999)
         series_start_spin.setValue(1)
         self._register_spinbox(series_start_spin)
+        self.direct_series_spin = series_start_spin
         btn_series_from_page = QPushButton("Ejecutar desde página")
         btn_series_from_page.clicked.connect(
             lambda: self._emit_run(
@@ -229,6 +466,18 @@ class ScrapersTab(QWidget):
 
         series_layout.addWidget(btn_series_normal)
         series_layout.addLayout(series_start_layout)
+        self.direct_series_progress_label = QLabel("Sin registros disponibles.")
+        self.direct_series_progress_label.setWordWrap(True)
+        series_layout.addWidget(self.direct_series_progress_label)
+        btn_series_reset = QPushButton("Reiniciar progreso")
+        btn_series_reset.clicked.connect(
+            lambda: self._reset_progress(
+                DIRECT_SERIES_PROGRESS_FILE,
+                "series directas",
+            )
+        )
+        self._register_button(btn_series_reset)
+        series_layout.addWidget(btn_series_reset)
         series_box.setLayout(series_layout)
 
         # Actualizaciones
@@ -241,10 +490,17 @@ class ScrapersTab(QWidget):
             ("Series (actualizadas)", "update_episodes_updated"),
         ]
         for label, module in update_buttons:
+            row_layout = QHBoxLayout()
             button = QPushButton(label)
             button.clicked.connect(lambda _, m=module: self._emit_run(m))
             self._register_button(button)
-            updates_layout.addWidget(button)
+            row_layout.addWidget(button)
+            progress_label = QLabel("Última ejecución: Sin registros.")
+            progress_label.setWordWrap(True)
+            row_layout.addWidget(progress_label, 1)
+            row_layout.addStretch(1)
+            updates_layout.addLayout(row_layout)
+            self.update_progress_labels[module] = progress_label
         updates_box.setLayout(updates_layout)
 
         layout.addWidget(movies_box)
@@ -269,6 +525,7 @@ class ScrapersTab(QWidget):
         start_spin.setRange(1, 9999)
         start_spin.setValue(1)
         self._register_spinbox(start_spin)
+        self.torrent_movies_spin = start_spin
         btn_from_page = QPushButton("Ejecutar desde página")
         btn_from_page.clicked.connect(
             lambda: self._emit_run(
@@ -283,6 +540,18 @@ class ScrapersTab(QWidget):
 
         movies_layout.addWidget(btn_resume)
         movies_layout.addLayout(movies_start_layout)
+        self.torrent_movies_progress_label = QLabel("Sin registros disponibles.")
+        self.torrent_movies_progress_label.setWordWrap(True)
+        movies_layout.addWidget(self.torrent_movies_progress_label)
+        btn_movies_reset = QPushButton("Reiniciar progreso")
+        btn_movies_reset.clicked.connect(
+            lambda: self._reset_progress(
+                TORRENT_MOVIES_PROGRESS_FILE,
+                "películas torrent",
+            )
+        )
+        self._register_button(btn_movies_reset)
+        movies_layout.addWidget(btn_movies_reset)
         movies_box.setLayout(movies_layout)
 
         series_box = QGroupBox("Series")
@@ -297,6 +566,7 @@ class ScrapersTab(QWidget):
         series_spin.setRange(1, 9999)
         series_spin.setValue(1)
         self._register_spinbox(series_spin)
+        self.torrent_series_spin = series_spin
         btn_series_from_page = QPushButton("Ejecutar desde página")
         btn_series_from_page.clicked.connect(
             lambda: self._emit_run(
@@ -311,6 +581,18 @@ class ScrapersTab(QWidget):
 
         series_layout.addWidget(btn_series_resume)
         series_layout.addLayout(series_start_layout)
+        self.torrent_series_progress_label = QLabel("Sin registros disponibles.")
+        self.torrent_series_progress_label.setWordWrap(True)
+        series_layout.addWidget(self.torrent_series_progress_label)
+        btn_series_reset = QPushButton("Reiniciar progreso")
+        btn_series_reset.clicked.connect(
+            lambda: self._reset_progress(
+                TORRENT_SERIES_PROGRESS_FILE,
+                "series torrent",
+            )
+        )
+        self._register_button(btn_series_reset)
+        series_layout.addWidget(btn_series_reset)
         series_box.setLayout(series_layout)
 
         layout.addWidget(movies_box)
@@ -361,6 +643,7 @@ class ScrapersTab(QWidget):
 
         layout.addWidget(tabs)
         self.setLayout(layout)
+        self.refresh_progress_info()
 
     def set_running(self, running: bool) -> None:
         for button in self._buttons:
@@ -448,7 +731,7 @@ class DatabaseTab(QWidget):
         self.setLayout(main_layout)
 
     def change_direct_path(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = QFileDialog.getOpenFileName(
             self,
             "Selecciona la base de datos directa",
             scraper_utils.DB_PATH,
@@ -456,15 +739,16 @@ class DatabaseTab(QWidget):
         )
         if not path:
             return
-        if not path.lower().endswith(".db"):
-            path = f"{path}.db"
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Ruta no válida", "La ruta seleccionada no existe.")
+            return
         scraper_utils.set_db_path(path)
         self.refresh_paths()
         self.log_callback(f"Ruta de base directa actualizada: {scraper_utils.DB_PATH}")
         QMessageBox.information(self, "Ruta actualizada", "Se guardó la nueva ruta de la base directa.")
 
     def change_torrent_path(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = QFileDialog.getOpenFileName(
             self,
             "Selecciona la base de datos torrent",
             scraper_utils.TORRENT_DB_PATH,
@@ -472,8 +756,9 @@ class DatabaseTab(QWidget):
         )
         if not path:
             return
-        if not path.lower().endswith(".db"):
-            path = f"{path}.db"
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Ruta no válida", "La ruta seleccionada no existe.")
+            return
         scraper_utils.set_torrent_db_path(path)
         self.refresh_paths()
         self.log_callback(f"Ruta de base torrent actualizada: {scraper_utils.TORRENT_DB_PATH}")
@@ -747,6 +1032,7 @@ class MainWindow(QMainWindow):
 
         clear_stop_request()
         self.runner = None
+        self.scrapers_tab.refresh_progress_info()
 
 
 def run_gui() -> int:
