@@ -302,6 +302,13 @@ def connect_db(db_path=None):
     if db_path is None:
         db_path = DB_PATH
 
+    db_path = os.path.abspath(db_path)
+
+    if db_path != ":memory:" and not os.path.exists(db_path):
+        raise FileNotFoundError(
+            f"La base de datos '{db_path}' no existe. Crea la base desde la pestaña de configuración."
+        )
+
     try:
         logging.getLogger(__name__).debug(f"Conectando a la base de datos en: {db_path}")
         connection = sqlite3.connect(db_path, timeout=30)
@@ -419,8 +426,15 @@ def setup_database(logger, db_path=None):
     """Configura la base de datos, creando tablas si no existen y añadiendo columnas necesarias."""
     if db_path is None:
         db_path = DB_PATH
+
+    db_path = os.path.abspath(db_path)
     logger.debug(f"Iniciando configuración de la base de datos en: {db_path}")
-    connection = connect_db(db_path)
+
+    try:
+        connection = connect_db(db_path)
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+        return False
     cursor = connection.cursor()
 
     try:

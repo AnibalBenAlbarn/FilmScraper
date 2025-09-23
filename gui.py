@@ -765,40 +765,70 @@ class DatabaseTab(QWidget):
         QMessageBox.information(self, "Ruta actualizada", "Se guardó la nueva ruta de la base torrent.")
 
     def create_direct_db(self) -> None:
-        if create_direct_db(scraper_utils.DB_PATH) and scraper_utils.setup_database(self.db_logger, scraper_utils.DB_PATH):
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Selecciona la ubicación de la base directa",
+            scraper_utils.DB_PATH,
+            "Bases de datos (*.db);;Todos los archivos (*)",
+        )
+        if not selected_path:
+            return
+
+        if not selected_path.endswith(".db"):
+            selected_path = f"{selected_path}.db"
+        selected_path = os.path.abspath(selected_path)
+
+        if create_direct_db(selected_path) and scraper_utils.setup_database(self.db_logger, selected_path):
             try:
-                conn = connect_db(scraper_utils.DB_PATH)
+                conn = connect_db(selected_path)
                 conn.close()
+                scraper_utils.set_db_path(selected_path)
+                self.refresh_paths()
                 QMessageBox.information(
                     self,
                     "Base creada",
-                    f"La base directa se creó y verificó correctamente en:\n{scraper_utils.DB_PATH}",
+                    f"La base directa se creó y verificó correctamente en:\n{selected_path}",
                 )
-                self.log_callback(f"Base directa creada en {scraper_utils.DB_PATH}.")
+                self.log_callback(f"Base directa creada en {selected_path}.")
             except Exception as exc:  # pragma: no cover - errores de conexión
                 QMessageBox.warning(self, "Error de conexión", f"No se pudo verificar la base directa: {exc}")
-                self.log_callback(f"Error al verificar la base directa en {scraper_utils.DB_PATH}: {exc}")
+                self.log_callback(f"Error al verificar la base directa en {selected_path}: {exc}")
         else:
             QMessageBox.warning(self, "Error", "No se pudo crear la base directa.")
-            self.log_callback(f"No se pudo crear la base directa en {scraper_utils.DB_PATH}.")
+            self.log_callback(f"No se pudo crear la base directa en {selected_path}.")
 
     def create_torrent_db(self) -> None:
-        if create_torrent_db(scraper_utils.TORRENT_DB_PATH):
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Selecciona la ubicación de la base torrent",
+            scraper_utils.TORRENT_DB_PATH,
+            "Bases de datos (*.db);;Todos los archivos (*)",
+        )
+        if not selected_path:
+            return
+
+        if not selected_path.endswith(".db"):
+            selected_path = f"{selected_path}.db"
+        selected_path = os.path.abspath(selected_path)
+
+        if create_torrent_db(selected_path):
             try:
-                conn = sqlite3.connect(scraper_utils.TORRENT_DB_PATH)
+                conn = sqlite3.connect(selected_path)
                 conn.close()
+                scraper_utils.set_torrent_db_path(selected_path)
+                self.refresh_paths()
                 QMessageBox.information(
                     self,
                     "Base creada",
-                    f"La base torrent se creó y verificó correctamente en:\n{scraper_utils.TORRENT_DB_PATH}",
+                    f"La base torrent se creó y verificó correctamente en:\n{selected_path}",
                 )
-                self.log_callback(f"Base torrent creada en {scraper_utils.TORRENT_DB_PATH}.")
+                self.log_callback(f"Base torrent creada en {selected_path}.")
             except Exception as exc:  # pragma: no cover - errores de conexión
                 QMessageBox.warning(self, "Error de conexión", f"No se pudo verificar la base torrent: {exc}")
-                self.log_callback(f"Error al verificar la base torrent en {scraper_utils.TORRENT_DB_PATH}: {exc}")
+                self.log_callback(f"Error al verificar la base torrent en {selected_path}: {exc}")
         else:
             QMessageBox.warning(self, "Error", "No se pudo crear la base torrent.")
-            self.log_callback(f"No se pudo crear la base torrent en {scraper_utils.TORRENT_DB_PATH}.")
+            self.log_callback(f"No se pudo crear la base torrent en {selected_path}.")
 
     def create_both_db(self) -> None:
         self.create_direct_db()
