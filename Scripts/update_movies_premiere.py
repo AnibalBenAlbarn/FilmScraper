@@ -6,7 +6,7 @@ from datetime import datetime
 from .scraper_utils import (
     setup_logger, create_driver, login, setup_database,
     save_progress, load_progress, clear_cache,
-    BASE_URL, PROJECT_ROOT, is_url_completed, mark_url_completed
+    BASE_URL, DB_PATH, PROJECT_ROOT, is_url_completed, mark_url_completed
 )
 
 # Reutilizamos funciones del script de películas actualizadas
@@ -33,7 +33,24 @@ def process_premiere_movies(db_path=None):
     progress_data = {}
     main_driver = None
     try:
-        setup_database(logger, db_path)
+        if db_path:
+            db_path = os.path.abspath(db_path)
+        else:
+            db_path = DB_PATH
+
+        if not os.path.exists(db_path):
+            logger.error(
+                "La base de datos directa no existe en %s. Crea la base desde la pestaña de configuración antes de ejecutar el proceso.",
+                db_path,
+            )
+            return []
+
+        if not setup_database(logger, db_path):
+            logger.error(
+                "No se pudo configurar la base de datos en %s. Crea la base antes de ejecutar el proceso.",
+                db_path,
+            )
+            return []
         clear_cache()
 
         main_driver = create_driver()

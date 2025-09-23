@@ -33,6 +33,7 @@ try:
         insert_season,
         insert_episode,
         BASE_URL,
+        DB_PATH,
         MAX_WORKERS,
         MAX_RETRIES,
         PROJECT_ROOT,
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover - fallback when executed directly
         insert_season,
         insert_episode,
         BASE_URL,
+        DB_PATH,
         MAX_WORKERS,
         MAX_RETRIES,
         PROJECT_ROOT,
@@ -1644,6 +1646,18 @@ def process_all_series(start_page=None, max_pages=None, db_path=None, max_worker
     start_time = datetime.now()
     logger.info(f"Iniciando procesamiento de series: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    if db_path:
+        db_path = os.path.abspath(db_path)
+    else:
+        db_path = DB_PATH
+
+    if not os.path.exists(db_path):
+        logger.error(
+            "La base de datos directa no existe en %s. Crea la base desde la pestaña de configuración antes de ejecutar el scraper.",
+            db_path,
+        )
+        return
+
     # Usar el número de workers especificado o el valor por defecto
     if max_workers is None:
         max_workers = MAX_WORKERS
@@ -1659,7 +1673,12 @@ def process_all_series(start_page=None, max_pages=None, db_path=None, max_worker
 
     try:
         # Configurar la base de datos
-        setup_database(logger, db_path)
+        if not setup_database(logger, db_path):
+            logger.error(
+                "No se pudo configurar la base de datos en %s. Crea la base antes de ejecutar el scraper.",
+                db_path,
+            )
+            return
 
         # Limpiar caché antes de comenzar
         clear_cache()

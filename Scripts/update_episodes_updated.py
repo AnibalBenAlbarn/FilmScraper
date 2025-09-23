@@ -18,7 +18,7 @@ from .scraper_utils import (
     save_progress, load_progress, extract_links,
     insert_links_batch, clear_cache, find_series_by_title_year,
     season_exists, episode_exists, insert_series, insert_season,
-    insert_episode, BASE_URL, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
+    insert_episode, BASE_URL, DB_PATH, MAX_WORKERS, MAX_RETRIES, PROJECT_ROOT,
     is_url_completed, mark_url_completed
 )
 from .graceful_shutdown import GracefulShutdown
@@ -644,8 +644,25 @@ def process_updated_episodes(db_path=None):
     progress_data = {}
     main_driver = None
     try:
+        if db_path:
+            db_path = os.path.abspath(db_path)
+        else:
+            db_path = DB_PATH
+
+        if not os.path.exists(db_path):
+            logger.error(
+                "La base de datos directa no existe en %s. Crea la base desde la pestaña de configuración antes de ejecutar el proceso.",
+                db_path,
+            )
+            return []
+
         # Configurar la base de datos
-        setup_database(logger, db_path)
+        if not setup_database(logger, db_path):
+            logger.error(
+                "No se pudo configurar la base de datos en %s. Crea la base antes de ejecutar el proceso.",
+                db_path,
+            )
+            return []
 
         # Limpiar caché antes de comenzar
         clear_cache()
