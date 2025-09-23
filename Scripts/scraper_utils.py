@@ -47,6 +47,11 @@ CACHE_ENABLED = True
 # Ruta del proyecto
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Directorio compartido para archivos de progreso y señalización
+PROGRESS_DIR = os.path.join(PROJECT_ROOT, "progress")
+os.makedirs(PROGRESS_DIR, exist_ok=True)
+STOP_SIGNAL_FILE = os.path.join(PROGRESS_DIR, "stop.flag")
+
 # Configuración de la base de datos
 DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "direct_dw_db.db")
 TORRENT_DB_PATH = os.path.join(PROJECT_ROOT, "Scripts", "torrent_dw_db.db")
@@ -99,6 +104,11 @@ class GracefulShutdown:
     @staticmethod
     def _trigger(*args, **kwargs):
         shutdown_event.set()
+        try:
+            with open(STOP_SIGNAL_FILE, "w", encoding="utf-8") as flag:
+                flag.write(str(time.time()))
+        except OSError:
+            pass
 
     @staticmethod
     def _listen_msvcrt():  # pragma: no cover - requiere entorno interactivo
@@ -112,6 +122,32 @@ class GracefulShutdown:
 def get_shutdown_event():
     """Devuelve el evento de apagado para coordinación entre hilos."""
     return shutdown_event
+
+
+def request_stop() -> None:
+    """Señala a los procesos scraper que deben finalizar tras la iteración en curso."""
+    shutdown_event.set()
+    try:
+        with open(STOP_SIGNAL_FILE, "w", encoding="utf-8") as flag:
+            flag.write(str(time.time()))
+    except OSError as exc:
+        logging.getLogger(__name__).warning("No se pudo crear la señal de parada: %s", exc)
+
+
+def clear_stop_request() -> None:
+    """Limpia la señal de parada para permitir nuevas ejecuciones."""
+    shutdown_event.clear()
+    try:
+        os.remove(STOP_SIGNAL_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logging.getLogger(__name__).warning("No se pudo eliminar la señal de parada: %s", exc)
+
+
+def is_stop_requested() -> bool:
+    """Indica si existe una petición para detener el procesamiento en curso."""
+    return shutdown_event.is_set() or os.path.exists(STOP_SIGNAL_FILE)
 
 
 # Instanciar para activar la captura de señales
@@ -203,7 +239,7 @@ def setup_logger(name, log_file, level=logging.INFO):
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler(os.path.join(log_dir, log_file))
+    file_handler = logging.FileHandler(os.path.join(log_dir, log_file), encoding="utf-8")
     file_handler.setLevel(level)
 
     # Crear formato y agregarlo a los handlers

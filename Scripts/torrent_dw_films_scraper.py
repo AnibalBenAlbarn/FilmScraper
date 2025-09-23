@@ -13,7 +13,13 @@ import urllib3
 
 #ver:1.05
 # Obtener la ruta del proyecto desde las utilidades compartidas
-from .scraper_utils import PROJECT_ROOT, get_shutdown_event, TORRENT_DB_PATH
+from .scraper_utils import (
+    PROJECT_ROOT,
+    get_shutdown_event,
+    TORRENT_DB_PATH,
+    is_stop_requested,
+    clear_stop_request,
+)
 
 shutdown_event = get_shutdown_event()
 
@@ -352,6 +358,8 @@ def save_to_db(movie_data):
 
 def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     """Itera sobre los IDs de las películas y extrae los datos."""
+    clear_stop_request()
+
     # Cargar progreso anterior si existe
     progress_data = load_progress()
     current_id = progress_data.get("current_id", start_id)
@@ -361,11 +369,13 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
     logger.info(f"Iniciando scraping desde ID: {current_id}, archivos guardados anteriormente: {total_saved}")
 
     consecutive_failures = 0
+    stop_requested = False
 
     try:
         for movie_id in range(current_id, end_id + 1):
-            if shutdown_event.is_set():
-                logger.info("Señal de apagado recibida. Saliendo del bucle de películas")
+            if is_stop_requested():
+                stop_requested = True
+                logger.info("Señal de parada detectada. Finalizando después del ID %s", movie_id - 1)
                 break
 
             movie_url = f"{BASE_URL}{movie_id}/"
@@ -397,18 +407,34 @@ def scrape_movies(start_id=1, end_id=35000, max_consecutive_failures=10):
             finally:
                 next_id = movie_id + 1
                 save_progress(next_id, total_saved)
-                sleep_time = 1 + (movie_id % 2)
-                time.sleep(sleep_time)
+
+            if is_stop_requested():
+                stop_requested = True
+                logger.info("Solicitud de parada recibida. Se detendrá antes de continuar con el siguiente ID.")
+                break
+
+            sleep_time = 1 + (movie_id % 2)
+            time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         logger.info("Script interrumpido por el usuario")
         shutdown_event.set()
+        stop_requested = True
     except Exception as e:
         logger.critical(f"Error crítico: {str(e)}")
     finally:
         # Guardar progreso final
         save_progress(next_id, total_saved)
-        logger.info(f"Proceso completado o interrumpido. Se guardaron {total_saved} archivos de torrent en la base de datos.")
+        if stop_requested:
+            logger.info(
+                "Proceso detenido por solicitud del usuario. Último ID procesado: %s",
+                max(current_id, next_id - 1),
+            )
+        else:
+            logger.info(
+                f"Proceso completado o interrumpido. Se guardaron {total_saved} archivos de torrent en la base de datos."
+            )
+        clear_stop_request()
 
 
 if __name__ == "__main__":
