@@ -239,6 +239,7 @@ class ScrapersTab(QWidget):
         try:
             if os.path.exists(path):
                 os.remove(path)
+                self._apply_progress_defaults(path)
                 QMessageBox.information(
                     self,
                     "Progreso reiniciado",
@@ -252,6 +253,7 @@ class ScrapersTab(QWidget):
                     f"No se encontró progreso previo para {description}.",
                 )
                 self.log_callback(f"No se encontró progreso previo para {description}.")
+                self._apply_progress_defaults(path)
         except OSError as exc:
             QMessageBox.warning(
                 self,
@@ -262,6 +264,30 @@ class ScrapersTab(QWidget):
             return
 
         self.refresh_progress_info()
+
+    def _apply_progress_defaults(self, path: str) -> None:
+        """Restaura los valores por defecto en la interfaz tras limpiar el progreso."""
+
+        if path == DIRECT_MOVIES_PROGRESS_FILE:
+            if self.direct_movies_progress_label:
+                self.direct_movies_progress_label.setText("Sin registros disponibles.")
+            if self.direct_movies_spin:
+                self.direct_movies_spin.setValue(1)
+        elif path == DIRECT_SERIES_PROGRESS_FILE:
+            if self.direct_series_progress_label:
+                self.direct_series_progress_label.setText("Sin registros disponibles.")
+            if self.direct_series_spin:
+                self.direct_series_spin.setValue(1)
+        elif path == TORRENT_MOVIES_PROGRESS_FILE:
+            if self.torrent_movies_progress_label:
+                self.torrent_movies_progress_label.setText("Sin registros disponibles.")
+            if self.torrent_movies_spin:
+                self.torrent_movies_spin.setValue(1)
+        elif path == TORRENT_SERIES_PROGRESS_FILE:
+            if self.torrent_series_progress_label:
+                self.torrent_series_progress_label.setText("Sin registros disponibles.")
+            if self.torrent_series_spin:
+                self.torrent_series_spin.setValue(1)
 
     def refresh_progress_info(self) -> None:
         self._update_direct_movies_info()
