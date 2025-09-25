@@ -6,8 +6,6 @@ from bs4 import BeautifulSoup
 import time
 import sqlite3
 import logging
-import re
-from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import urllib3
@@ -200,30 +198,68 @@ def get_quality_id(conn, quality):
     return result[0]
 
 
-def check_if_movie_exists(conn, title, year):
-    """Verifica si una película ya existe y devuelve su ID."""
+def normalize_quality_label(quality):
+    """Normaliza el texto de la calidad para evitar duplicados accidentales."""
+    if not quality:
+        return "Unknown"
+    return quality.strip()
+
+
+def normalize_torrent_link(link):
+    """Normaliza enlaces de torrents para comparaciones consistentes."""
+    if not link:
+        return ""
+    return link.strip()
+
+
+def find_existing_movie(conn, title, year):
+    """Busca una película existente priorizando coincidencias exactas de año."""
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT id FROM torrent_downloads 
-        WHERE title = ? AND year = ? AND type = 'movie'
-    """, (title, year))
+    cursor.execute(
+        """
+        SELECT id, year
+        FROM torrent_downloads
+        WHERE type = 'movie' AND lower(title) = lower(?)
+    """,
+        (title,),
+    )
 
-    result = cursor.fetchone()
-    return result[0] if result else None
+    matches = cursor.fetchall()
+    if not matches:
+        return None, False
+
+    for movie_id, stored_year in matches:
+        if stored_year == year:
+            return movie_id, True
+
+    # Si no hay coincidencia exacta de año, usar la primera coincidencia por título
+    return matches[0][0], False
 
 
-def check_if_quality_link_exists(conn, torrent_id, quality_id):
-    """Verifica si ya existe un enlace de torrent para una película y calidad específicas."""
+def evaluate_duplicate_state(conn, torrent_id, quality_id, torrent_link):
+    """Determina el estado de duplicado basado en nombre, calidad y enlace."""
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT id FROM torrent_files 
+    cursor.execute(
+        """
+        SELECT torrent_link
+        FROM torrent_files
         WHERE torrent_id = ? AND quality_id = ? AND episode_id IS NULL
-    """, (torrent_id, quality_id))
+    """,
+        (torrent_id, quality_id),
+    )
 
-    result = cursor.fetchone()
-    return result is not None
+    rows = cursor.fetchall()
+    if not rows:
+        return "missing_quality"
+
+    normalized_new_link = normalize_torrent_link(torrent_link).lower()
+    for (existing_link,) in rows:
+        if normalize_torrent_link(existing_link).lower() == normalized_new_link:
+            return "exact_duplicate"
+
+    return "quality_match"
 
 
 def get_movie_data(movie_url):
@@ -285,6 +321,9 @@ def get_movie_data(movie_url):
 
         torrent_link = "https:" + torrent_element['href'] if torrent_element else "No disponible"
 
+        quality = normalize_quality_label(quality)
+        torrent_link = normalize_torrent_link(torrent_link)
+
         # Convertir el año a entero si es posible
         try:
             year = int(year)
@@ -310,19 +349,42 @@ def save_to_db(movie_data):
         conn = sqlite3.connect(db_path)
 
         # Verificar si la película ya existe
-        movie_id = check_if_movie_exists(conn, movie_data['title'], movie_data['year'])
+        movie_id, matched_by_year = find_existing_movie(
+            conn, movie_data['title'], movie_data['year']
+        )
 
         # Obtener el ID de la calidad
         quality_id = get_quality_id(conn, movie_data['quality'])
 
         if movie_id:
-            # La película ya existe, verificar si ya tiene esta calidad
-            if check_if_quality_link_exists(conn, movie_id, quality_id):
-                logger.info(f"La película '{movie_data['title']}' ya tiene la calidad {movie_data['quality']}")
+            match_context = "nombre y año" if matched_by_year else "nombre"
+            logger.info(
+                f"Verificación de duplicados para '{movie_data['title']}': coincidencia por {match_context} encontrada (ID {movie_id})."
+            )
+
+            duplicate_state = evaluate_duplicate_state(
+                conn, movie_id, quality_id, movie_data['torrent_link']
+            )
+
+            if duplicate_state == "exact_duplicate":
+                logger.info(
+                    f"La película '{movie_data['title']}' ya tiene la calidad {movie_data['quality']} "
+                    "con el mismo enlace .torrent."
+                )
                 conn.close()
                 return False
 
-            # Añadir nuevo enlace de torrent para esta calidad
+            if duplicate_state == "quality_match":
+                logger.info(
+                    f"La película '{movie_data['title']}' coincide en nombre y calidad {movie_data['quality']} "
+                    "pero el enlace es nuevo. Se guardará como fuente adicional."
+                )
+            else:
+                logger.info(
+                    f"La película '{movie_data['title']}' coincide en nombre pero no tenía la calidad {movie_data['quality']}."
+                )
+
+            # Añadir nuevo enlace de torrent para esta calidad o un enlace alternativo
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO torrent_files (torrent_id, episode_id, quality_id, torrent_link) VALUES (?, NULL, ?, ?)",
@@ -330,7 +392,8 @@ def save_to_db(movie_data):
             )
             conn.commit()
             logger.info(
-                f"Añadida nueva calidad {movie_data['quality']} para película existente '{movie_data['title']}'")
+                f"Añadido enlace de torrent para '{movie_data['title']}' con calidad {movie_data['quality']}"
+            )
         else:
             # Insertar nueva película
             cursor = conn.cursor()
