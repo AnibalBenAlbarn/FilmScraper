@@ -201,40 +201,109 @@ def get_quality_id(conn, quality):
     return result[0]
 
 
-def check_if_series_exists(conn, title):
-    """Verifica si la serie ya existe en la base de datos y devuelve su ID."""
+def normalize_quality_label(quality):
+    """Normaliza el texto de la calidad para evitar duplicados accidentales."""
+    if not quality:
+        return "Unknown"
+    return quality.strip()
+
+
+def normalize_torrent_link(link):
+    """Normaliza enlaces de torrents para comparaciones consistentes."""
+    if not link:
+        return ""
+    return link.strip()
+
+
+def find_existing_series(conn, title):
+    """Busca una serie existente por nombre (ignorando mayúsculas/minúsculas)."""
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id FROM torrent_downloads WHERE title = ? AND type = 'series'", (title,))
-    result = cursor.fetchone()
+    cursor.execute(
+        """
+        SELECT id
+        FROM torrent_downloads
+        WHERE type = 'series' AND lower(title) = lower(?)
+    """,
+        (title,),
+    )
 
+    result = cursor.fetchone()
     return result[0] if result else None
 
 
-def check_if_episode_exists(conn, season_id, episode_number, episode_title):
-    """Verifica si un episodio ya existe y devuelve su ID."""
+def find_existing_season(conn, series_id, season_number):
+    """Busca una temporada existente para una serie dada."""
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT id FROM series_episodes 
-        WHERE season_id = ? AND episode_number = ? AND title = ?
-    """, (season_id, episode_number, episode_title))
+    cursor.execute(
+        """
+        SELECT id
+        FROM series_seasons
+        WHERE series_id = ? AND season_number = ?
+    """,
+        (series_id, season_number),
+    )
 
     result = cursor.fetchone()
-    return result[0] if result else None
+    if result:
+        return result[0], True
+    return None, False
 
 
-def check_if_quality_link_exists(conn, episode_id, quality_id, torrent_link):
-    """Verifica si ya existe un enlace de torrent para un episodio y calidad específicos."""
+def get_or_create_episode(conn, season_id, episode_number, episode_title):
+    """Obtiene el ID de un episodio, actualizando el título si es necesario."""
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT id FROM torrent_files 
-        WHERE episode_id = ? AND quality_id = ? AND torrent_link = ?
-    """, (episode_id, quality_id, torrent_link))
+    cursor.execute(
+        """
+        SELECT id, title
+        FROM series_episodes
+        WHERE season_id = ? AND episode_number = ?
+    """,
+        (season_id, episode_number),
+    )
 
     result = cursor.fetchone()
-    return result is not None
+    if result:
+        episode_id, stored_title = result
+        if stored_title != episode_title:
+            cursor.execute(
+                "UPDATE series_episodes SET title = ? WHERE id = ?",
+                (episode_title, episode_id),
+            )
+        return episode_id, False
+
+    cursor.execute(
+        "INSERT INTO series_episodes (season_id, episode_number, title) VALUES (?, ?, ?)",
+        (season_id, episode_number, episode_title),
+    )
+    return cursor.lastrowid, True
+
+
+def evaluate_episode_duplicate_state(conn, episode_id, quality_id, torrent_link):
+    """Determina el estado de duplicado basado en serie, episodio, calidad y enlace."""
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT torrent_link
+        FROM torrent_files
+        WHERE episode_id = ? AND quality_id = ?
+    """,
+        (episode_id, quality_id),
+    )
+
+    rows = cursor.fetchall()
+    if not rows:
+        return "missing_quality"
+
+    normalized_new_link = normalize_torrent_link(torrent_link).lower()
+    for (existing_link,) in rows:
+        if normalize_torrent_link(existing_link).lower() == normalized_new_link:
+            return "exact_duplicate"
+
+    return "quality_match"
 
 
 def get_soup(url, retries=3):
@@ -335,6 +404,8 @@ def scrape_series_details(url):
                 logger.info(f"Calidad encontrada (búsqueda alternativa): {quality}")
                 break
 
+    quality = normalize_quality_label(quality)
+
     # Buscar el número total de episodios
     episodes_count = 0
     for p_tag in soup.find_all('p'):
@@ -370,7 +441,13 @@ def scrape_series_details(url):
                 # Crear el título completo del episodio
                 episode_title = f"{series_title} - {season_number}ª Temporada [{quality}] - {episode_display}"
 
-                episodes.append((episode_number, episode_title, full_torrent_link))
+                episodes.append(
+                    (
+                        episode_number,
+                        episode_title,
+                        normalize_torrent_link(full_torrent_link),
+                    )
+                )
         except (AttributeError, IndexError) as e:
             logger.error(f"Error al procesar fila de episodio: {e}")
 
@@ -384,58 +461,104 @@ def insert_data(db_conn, series_title, season_number, quality, episodes):
         logger.warning("No hay suficientes datos para insertar")
         return False
 
+    # Normalizar datos antes de guardarlos
+    normalized_quality = normalize_quality_label(quality)
+    normalized_episodes = []
+    for episode_number, episode_title, torrent_link in episodes:
+        normalized_link = normalize_torrent_link(torrent_link)
+        if not normalized_link:
+            logger.debug(
+                f"Episodio '{episode_title}' omitido por no tener enlace de torrent válido."
+            )
+            continue
+        normalized_episodes.append((episode_number, episode_title, normalized_link))
+
+    if not normalized_episodes:
+        logger.warning(
+            f"No hay episodios válidos para insertar en la serie '{series_title}'."
+        )
+        return False
+
     try:
-        # Verificar si la serie ya existe
-        series_id = check_if_series_exists(db_conn, series_title)
-
-        # Obtener el ID de la calidad
-        quality_id = get_quality_id(db_conn, quality)
-
         cursor = db_conn.cursor()
 
-        if not series_id:
-            # Insertar serie nueva
-            cursor.execute("INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
-                           (series_title, 2025, 'Unknown', 'Unknown', 'series'))
+        # Verificar si la serie ya existe
+        series_id = find_existing_series(db_conn, series_title)
+
+        if series_id:
+            logger.info(
+                f"Verificación de duplicados para '{series_title}': coincidencia por nombre encontrada (ID {series_id})."
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO torrent_downloads (title, year, genre, director, type) VALUES (?, ?, ?, ?, ?)",
+                (series_title, 0, 'Unknown', 'Unknown', 'series'),
+            )
             series_id = cursor.lastrowid
             logger.info(f"Nueva serie añadida: '{series_title}'")
 
-        # Insertar temporada (siempre crear una nueva temporada para cada calidad)
-        cursor.execute("INSERT INTO series_seasons (series_id, season_number) VALUES (?, ?)",
-                       (series_id, season_number))
-        season_id = cursor.lastrowid
-        logger.info(f"Nueva temporada añadida: {season_number} para serie '{series_title}' con calidad {quality}")
+        # Verificar si la temporada ya existe
+        season_id, season_exists = find_existing_season(db_conn, series_id, season_number)
+        if season_exists:
+            logger.info(
+                f"La serie '{series_title}' ya tiene registrada la temporada {season_number}. Se reutilizará."
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO series_seasons (series_id, season_number) VALUES (?, ?)",
+                (series_id, season_number),
+            )
+            season_id = cursor.lastrowid
+            logger.info(
+                f"Nueva temporada añadida: {season_number} para serie '{series_title}' con calidad {normalized_quality}"
+            )
 
-        # Contador para episodios añadidos
+        # Obtener el ID de la calidad
+        quality_id = get_quality_id(db_conn, normalized_quality)
+
         episodes_added = 0
 
-        # Insertar episodios
-        for episode_number, episode_title, torrent_link in episodes:
-            # Verificar si el episodio ya existe con este título exacto
-            existing_episode_id = check_if_episode_exists(db_conn, season_id, episode_number, episode_title)
+        # Insertar episodios y enlaces
+        for episode_number, episode_title, torrent_link in normalized_episodes:
+            episode_id, created = get_or_create_episode(
+                db_conn, season_id, episode_number, episode_title
+            )
 
-            if existing_episode_id:
-                episode_id = existing_episode_id
-            else:
-                # Crear episodio
-                cursor.execute("INSERT INTO series_episodes (season_id, episode_number, title) VALUES (?, ?, ?)",
-                               (season_id, episode_number, episode_title))
-                episode_id = cursor.lastrowid
+            if created:
+                logger.info(
+                    f"Episodio creado: {episode_title} (Temporada {season_number}, Episodio {episode_number})."
+                )
 
-            # Verificar si ya existe este enlace de torrent para este episodio y calidad
-            if check_if_quality_link_exists(db_conn, episode_id, quality_id, torrent_link):
-                logger.info(f"El episodio {episode_title} ya tiene enlace para calidad {quality}")
+            duplicate_state = evaluate_episode_duplicate_state(
+                db_conn, episode_id, quality_id, torrent_link
+            )
+
+            if duplicate_state == "exact_duplicate":
+                logger.info(
+                    f"El episodio '{episode_title}' ya tiene la calidad {normalized_quality} con el mismo enlace .torrent."
+                )
                 continue
 
-            # Insertar enlace de torrent con la calidad correspondiente
+            if duplicate_state == "quality_match":
+                logger.info(
+                    f"El episodio '{episode_title}' coincide en serie y calidad {normalized_quality} "
+                    "pero el enlace es nuevo. Se guardará como fuente adicional."
+                )
+            else:
+                logger.info(
+                    f"El episodio '{episode_title}' no tenía la calidad {normalized_quality}. Se añadirá el nuevo enlace."
+                )
+
             cursor.execute(
                 "INSERT INTO torrent_files (torrent_id, episode_id, quality_id, torrent_link) VALUES (?, ?, ?, ?)",
-                (series_id, episode_id, quality_id, torrent_link))
-
+                (series_id, episode_id, quality_id, torrent_link),
+            )
             episodes_added += 1
 
         db_conn.commit()
-        logger.info(f"Se añadieron {episodes_added} episodios para la serie '{series_title}' con calidad {quality}.")
+        logger.info(
+            f"Se añadieron {episodes_added} enlaces para la serie '{series_title}' con calidad {normalized_quality}."
+        )
         return episodes_added
     except Exception as e:
         db_conn.rollback()
