@@ -1,23 +1,24 @@
 # HDFull Scrapers
 
 ## Overview (English)
-HDFull Scrapers is a command-line toolkit designed to collect metadata about movies and TV series from the HDFull website. It automates browsing the catalog, extracting details for each title, and synchronising the collected information with local SQLite databases. The application is organised around interactive menus that let you configure scraping options, update existing records, or maintain the databases used by the download managers.
+HDFull Scrapers now provides a full graphical interface to collect metadata about movies and TV series from the HDFull website. The GUI centralises the launch of scrapers, database maintenance tasks, and runtime monitoring in a single window that works across platforms.
 
 ### Key features
-- Guided menus for launching individual scrapers or running batch jobs.
+- Tabs for launching individual scrapers, running batch jobs, and reviewing progress.
 - Separate workflows for direct-download links and torrent releases.
 - Database utilities to create, migrate, or relocate the direct and torrent SQLite files.
-- Logging to monitor scraping progress and diagnose connectivity issues.
-- Command-line flags to jump directly into common tasks without navigating the full menu.
+- Real-time logging panel to monitor scraping progress and diagnose connectivity issues.
+- Configuration controls to adjust worker counts, retry limits, and cache usage without leaving the interface.
 
 ### How it works
 1. Launch the application with `python main.py` (or via the provided helper scripts).
-2. Choose a scraper or database action from the interactive menu.
-3. The selected scraper browses HDFull, parses the result pages, and stores structured data in the configured database.
-4. Progress and errors are reported in the console and in the `logs/` directory.
+2. Use the GUI tabs to choose a scraper, configure database paths, or tweak runtime settings.
+3. The selected scraper runs in a background process while the log view and progress indicators update in real time.
+4. Activity logs remain available in the `logs/` directory for later review.
 
 ### Project layout
-- `main.py`: Entry point that renders the menus and handles command-line arguments.
+- `main.py`: Entry point that launches the graphical interface.
+- `gui.py`: Implementation of the PyQt6 application.
 - `Scripts/`: Helper modules and individual scrapers.
 - `resources/`: Static assets used by the scrapers.
 - `logs/`: Output directory for execution logs (created at runtime).
@@ -31,30 +32,25 @@ pip install -r requirements.txt
 python main.py
 ```
 
-To skip the main menu and open the scraping shortcuts directly, run:
-
-```bash
-python main.py --scrapers-menu
-```
-
 ## Resumen (Español)
-HDFull Scrapers es un conjunto de herramientas de línea de comandos que recopila metadatos de películas y series desde el sitio web HDFull. Automatiza la navegación por el catálogo, extrae la información de cada título y sincroniza los datos con bases de datos SQLite locales. La aplicación se organiza en menús interactivos que permiten configurar los scrapers, actualizar registros existentes o mantener las bases de datos utilizadas por los gestores de descargas.
+HDFull Scrapers ahora ofrece una interfaz gráfica completa para recopilar metadatos de películas y series desde el sitio web HDFull. La GUI concentra en una sola ventana el lanzamiento de los scrapers, el mantenimiento de bases de datos y la supervisión en tiempo real, con compatibilidad multiplataforma.
 
 ### Características principales
-- Menús guiados para ejecutar scrapers individuales o trabajos por lotes.
+- Pestañas dedicadas para ejecutar scrapers, lanzar trabajos por lotes y revisar el progreso almacenado.
 - Flujos independientes para enlaces de descarga directa y lanzamientos torrent.
-- Utilidades de base de datos para crear, migrar o cambiar la ubicación de los archivos SQLite de directos y torrents.
-- Registro de actividad para supervisar el progreso y diagnosticar problemas de conectividad.
-- Parámetros por consola para acceder rápidamente a tareas comunes sin recorrer todo el menú.
+- Utilidades de base de datos para crear, migrar o cambiar la ubicación de los archivos SQLite directos y torrent.
+- Panel de registro en tiempo real para supervisar el progreso del scraping y diagnosticar incidencias.
+- Controles de configuración para ajustar workers, reintentos y uso de caché sin salir de la interfaz.
 
 ### Funcionamiento
 1. Inicia la aplicación con `python main.py` (o mediante los scripts auxiliares incluidos).
-2. Elige un scraper o una acción de base de datos desde el menú interactivo.
-3. El scraper seleccionado recorre HDFull, interpreta las páginas de resultados y guarda los datos estructurados en la base configurada.
-4. El progreso y los errores se muestran en la consola y se almacenan en el directorio `logs/`.
+2. Utiliza las pestañas de la GUI para elegir un scraper, configurar rutas de bases de datos o ajustar parámetros de ejecución.
+3. El scraper seleccionado se ejecuta en un proceso en segundo plano mientras la vista de registro y los indicadores de progreso se actualizan en tiempo real.
+4. Los registros de actividad quedan disponibles en el directorio `logs/` para consultarlos más tarde.
 
 ### Estructura del proyecto
-- `main.py`: Punto de entrada que muestra los menús y gestiona los argumentos de línea de comandos.
+- `main.py`: Punto de entrada que inicia la interfaz gráfica.
+- `gui.py`: Implementación de la aplicación en PyQt6.
 - `Scripts/`: Módulos auxiliares y scrapers individuales.
 - `resources/`: Archivos estáticos utilizados por los scrapers.
 - `logs/`: Carpeta creada en tiempo de ejecución para los registros.
@@ -66,10 +62,4 @@ python -m venv venv
 source venv/bin/activate  # En Windows usa: venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
-```
-
-Para acceder directamente a los atajos de scraping sin pasar por el menú principal, ejecuta:
-
-```bash
-python main.py --scrapers-menu
 ```
