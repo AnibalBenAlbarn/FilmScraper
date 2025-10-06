@@ -432,7 +432,7 @@ class ScrapersTab(QWidget):
         movies_start_layout = QHBoxLayout()
         movies_start_label = QLabel("Iniciar desde página:")
         movies_start_spin = QSpinBox()
-        movies_start_spin.setRange(1, 9999)
+        movies_start_spin.setRange(1, 999999)
         movies_start_spin.setValue(1)
         self._register_spinbox(movies_start_spin)
         self.direct_movies_spin = movies_start_spin
@@ -474,7 +474,7 @@ class ScrapersTab(QWidget):
         series_start_layout = QHBoxLayout()
         series_start_label = QLabel("Iniciar desde página:")
         series_start_spin = QSpinBox()
-        series_start_spin.setRange(1, 9999)
+        series_start_spin.setRange(1, 999999)
         series_start_spin.setValue(1)
         self._register_spinbox(series_start_spin)
         self.direct_series_spin = series_start_spin
@@ -548,7 +548,7 @@ class ScrapersTab(QWidget):
         movies_start_layout = QHBoxLayout()
         label = QLabel("Iniciar desde página:")
         start_spin = QSpinBox()
-        start_spin.setRange(1, 9999)
+        start_spin.setRange(1, 999999)
         start_spin.setValue(1)
         self._register_spinbox(start_spin)
         self.torrent_movies_spin = start_spin
@@ -589,7 +589,7 @@ class ScrapersTab(QWidget):
         series_start_layout = QHBoxLayout()
         series_label = QLabel("Iniciar desde página:")
         series_spin = QSpinBox()
-        series_spin.setRange(1, 9999)
+        series_spin.setRange(1, 999999)
         series_spin.setValue(1)
         self._register_spinbox(series_spin)
         self.torrent_series_spin = series_spin
@@ -904,16 +904,24 @@ class SettingsTab(QWidget):
         self.max_workers_spin.valueChanged.connect(self.update_max_workers)
 
         self.max_retries_spin = QSpinBox()
-        self.max_retries_spin.setRange(1, 20)
+        self.max_retries_spin.setRange(1, 999)
         self.max_retries_spin.setValue(int(scraper_utils.MAX_RETRIES))
-        self.max_retries_spin.valueChanged.connect(self.update_max_retries)
+
+        self.apply_max_retries_button = QPushButton("Aplicar")
+        self.apply_max_retries_button.clicked.connect(self.apply_max_retries)
 
         self.cache_checkbox = QCheckBox("Activar caché de peticiones")
         self.cache_checkbox.setChecked(bool(scraper_utils.CACHE_ENABLED))
         self.cache_checkbox.stateChanged.connect(self.update_cache)
 
         layout.addRow("Máximo de workers:", self.max_workers_spin)
-        layout.addRow("Máximo de reintentos:", self.max_retries_spin)
+
+        retries_row = QHBoxLayout()
+        retries_row.addWidget(self.max_retries_spin)
+        retries_row.addWidget(self.apply_max_retries_button)
+        retries_container = QWidget()
+        retries_container.setLayout(retries_row)
+        layout.addRow("Máximo de reintentos:", retries_container)
         layout.addRow(self.cache_checkbox)
 
         self.setLayout(layout)
@@ -927,7 +935,8 @@ class SettingsTab(QWidget):
         scraper_utils.set_max_workers(value)
         self.log_callback(f"Máximo de workers actualizado a {value}.")
 
-    def update_max_retries(self, value: int) -> None:
+    def apply_max_retries(self) -> None:
+        value = int(self.max_retries_spin.value())
         scraper_utils.set_max_retries(value)
         self.log_callback(f"Máximo de reintentos actualizado a {value}.")
 
