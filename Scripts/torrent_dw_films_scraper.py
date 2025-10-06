@@ -420,7 +420,7 @@ def save_to_db(movie_data):
         return False
 
 
-def scrape_movies(start_id=None, end_id=35000, max_consecutive_failures=10, resume=True):
+def scrape_movies(start_id=None, end_id=35000, max_consecutive_failures=100, resume=True):
     """Itera sobre los IDs de las películas y extrae los datos."""
     clear_stop_request()
 

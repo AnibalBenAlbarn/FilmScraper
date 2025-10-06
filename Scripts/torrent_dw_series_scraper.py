@@ -566,7 +566,7 @@ def insert_data(db_conn, series_title, season_number, quality, episodes):
         return 0
 
 
-def scrape_series(start_id=None, max_consecutive_failures=10, resume=True):
+def scrape_series(start_id=None, max_consecutive_failures=100, resume=True):
     """Itera sobre los IDs de las series y extrae los datos."""
     clear_stop_request()
 
