@@ -174,6 +174,8 @@ class ScrapersTab(QWidget):
         self.direct_series_spin: Optional[QSpinBox] = None
         self.torrent_movies_spin: Optional[QSpinBox] = None
         self.torrent_series_spin: Optional[QSpinBox] = None
+        self.torrent_movies_failures_spin: Optional[QSpinBox] = None
+        self.torrent_series_failures_spin: Optional[QSpinBox] = None
         self.direct_movies_progress_label: Optional[QLabel] = None
         self.direct_series_progress_label: Optional[QLabel] = None
         self.torrent_movies_progress_label: Optional[QLabel] = None
@@ -186,6 +188,52 @@ class ScrapersTab(QWidget):
 
     def _register_spinbox(self, spinbox: QSpinBox) -> None:
         self._spinboxes.append(spinbox)
+
+    def _get_torrent_movies_max_failures(self) -> int:
+        if self.torrent_movies_failures_spin:
+            return max(1, int(self.torrent_movies_failures_spin.value()))
+        return max(1, int(getattr(scraper_utils, "TORRENT_MOVIES_MAX_FAILURES", 10)))
+
+    def _get_torrent_series_max_failures(self) -> int:
+        if self.torrent_series_failures_spin:
+            return max(1, int(self.torrent_series_failures_spin.value()))
+        return max(1, int(getattr(scraper_utils, "TORRENT_SERIES_MAX_FAILURES", 10)))
+
+    def _torrent_movies_args(self, base_args: Optional[List[str]] = None) -> List[str]:
+        args = list(base_args or [])
+        args.extend(["--max-failures", str(self._get_torrent_movies_max_failures())])
+        return args
+
+    def _torrent_series_args(self, base_args: Optional[List[str]] = None) -> List[str]:
+        args = list(base_args or [])
+        args.extend(["--max-failures", str(self._get_torrent_series_max_failures())])
+        return args
+
+    def _sync_failure_limits(self) -> None:
+        if self.torrent_movies_failures_spin:
+            self.torrent_movies_failures_spin.blockSignals(True)
+            self.torrent_movies_failures_spin.setValue(
+                int(getattr(scraper_utils, "TORRENT_MOVIES_MAX_FAILURES", 10))
+            )
+            self.torrent_movies_failures_spin.blockSignals(False)
+        if self.torrent_series_failures_spin:
+            self.torrent_series_failures_spin.blockSignals(True)
+            self.torrent_series_failures_spin.setValue(
+                int(getattr(scraper_utils, "TORRENT_SERIES_MAX_FAILURES", 10))
+            )
+            self.torrent_series_failures_spin.blockSignals(False)
+
+    def _on_torrent_movies_failures_changed(self, value: int) -> None:
+        scraper_utils.set_torrent_movies_max_failures(value)
+        self.log_callback(
+            f"Máximo de fallos consecutivos para películas torrent actualizado a {value}."
+        )
+
+    def _on_torrent_series_failures_changed(self, value: int) -> None:
+        scraper_utils.set_torrent_series_max_failures(value)
+        self.log_callback(
+            f"Máximo de fallos consecutivos para series torrent actualizado a {value}."
+        )
 
     def _emit_run(self, module: str, args: Optional[List[str]] = None) -> None:
         if args is None:
@@ -295,6 +343,7 @@ class ScrapersTab(QWidget):
         self._update_torrent_movies_info()
         self._update_torrent_series_info()
         self._update_updates_info()
+        self._sync_failure_limits()
 
     def _update_direct_movies_info(self) -> None:
         if not self.direct_movies_progress_label or not self.direct_movies_spin:
@@ -542,7 +591,12 @@ class ScrapersTab(QWidget):
         movies_box = QGroupBox("Películas")
         movies_layout = QVBoxLayout()
         btn_resume = QPushButton("Reanudar/Actualizar")
-        btn_resume.clicked.connect(lambda: self._emit_run("torrent_dw_films_scraper", ["--resume"]))
+        btn_resume.clicked.connect(
+            lambda: self._emit_run(
+                "torrent_dw_films_scraper",
+                self._torrent_movies_args(["--resume"]),
+            )
+        )
         self._register_button(btn_resume)
 
         movies_start_layout = QHBoxLayout()
@@ -556,7 +610,10 @@ class ScrapersTab(QWidget):
         btn_from_page.clicked.connect(
             lambda: self._emit_run(
                 "torrent_dw_films_scraper",
-                ["--start-page", str(start_spin.value())],
+                self._torrent_movies_args([
+                    "--start-page",
+                    str(start_spin.value()),
+                ]),
             )
         )
         self._register_button(btn_from_page)
@@ -566,6 +623,19 @@ class ScrapersTab(QWidget):
 
         movies_layout.addWidget(btn_resume)
         movies_layout.addLayout(movies_start_layout)
+        failures_layout = QHBoxLayout()
+        failures_label = QLabel("Máx. fallos consecutivos:")
+        failures_spin = QSpinBox()
+        failures_spin.setRange(1, 999999)
+        failures_spin.setValue(
+            int(getattr(scraper_utils, "TORRENT_MOVIES_MAX_FAILURES", 10))
+        )
+        failures_spin.valueChanged.connect(self._on_torrent_movies_failures_changed)
+        self._register_spinbox(failures_spin)
+        self.torrent_movies_failures_spin = failures_spin
+        failures_layout.addWidget(failures_label)
+        failures_layout.addWidget(failures_spin)
+        movies_layout.addLayout(failures_layout)
         self.torrent_movies_progress_label = QLabel("Sin registros disponibles.")
         self.torrent_movies_progress_label.setWordWrap(True)
         movies_layout.addWidget(self.torrent_movies_progress_label)
@@ -583,7 +653,12 @@ class ScrapersTab(QWidget):
         series_box = QGroupBox("Series")
         series_layout = QVBoxLayout()
         btn_series_resume = QPushButton("Reanudar/Actualizar")
-        btn_series_resume.clicked.connect(lambda: self._emit_run("torrent_dw_series_scraper", ["--resume"]))
+        btn_series_resume.clicked.connect(
+            lambda: self._emit_run(
+                "torrent_dw_series_scraper",
+                self._torrent_series_args(["--resume"]),
+            )
+        )
         self._register_button(btn_series_resume)
 
         series_start_layout = QHBoxLayout()
@@ -597,7 +672,10 @@ class ScrapersTab(QWidget):
         btn_series_from_page.clicked.connect(
             lambda: self._emit_run(
                 "torrent_dw_series_scraper",
-                ["--start-page", str(series_spin.value())],
+                self._torrent_series_args([
+                    "--start-page",
+                    str(series_spin.value()),
+                ]),
             )
         )
         self._register_button(btn_series_from_page)
@@ -607,6 +685,19 @@ class ScrapersTab(QWidget):
 
         series_layout.addWidget(btn_series_resume)
         series_layout.addLayout(series_start_layout)
+        series_failures_layout = QHBoxLayout()
+        series_failures_label = QLabel("Máx. fallos consecutivos:")
+        series_failures_spin = QSpinBox()
+        series_failures_spin.setRange(1, 999999)
+        series_failures_spin.setValue(
+            int(getattr(scraper_utils, "TORRENT_SERIES_MAX_FAILURES", 10))
+        )
+        series_failures_spin.valueChanged.connect(self._on_torrent_series_failures_changed)
+        self._register_spinbox(series_failures_spin)
+        self.torrent_series_failures_spin = series_failures_spin
+        series_failures_layout.addWidget(series_failures_label)
+        series_failures_layout.addWidget(series_failures_spin)
+        series_layout.addLayout(series_failures_layout)
         self.torrent_series_progress_label = QLabel("Sin registros disponibles.")
         self.torrent_series_progress_label.setWordWrap(True)
         series_layout.addWidget(self.torrent_series_progress_label)

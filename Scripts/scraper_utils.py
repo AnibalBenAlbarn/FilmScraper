@@ -41,6 +41,10 @@ PASSWORD = 'Rolankor_09'
 MAX_WORKERS = 4  # Número máximo de workers para procesamiento paralelo
 MAX_RETRIES = 3  # Número máximo de reintentos para cada elemento
 
+# Configuración de tolerancia a fallos
+TORRENT_MOVIES_MAX_FAILURES = 10
+TORRENT_SERIES_MAX_FAILURES = 10
+
 # Configuración de caché
 CACHE_ENABLED = True
 
@@ -69,6 +73,12 @@ if os.path.exists(CONFIG_FILE):
         MAX_WORKERS = data.get('max_workers', MAX_WORKERS)
         MAX_RETRIES = data.get('max_retries', MAX_RETRIES)
         CACHE_ENABLED = data.get('cache_enabled', CACHE_ENABLED)
+        TORRENT_MOVIES_MAX_FAILURES = data.get(
+            'torrent_movies_max_failures', TORRENT_MOVIES_MAX_FAILURES
+        )
+        TORRENT_SERIES_MAX_FAILURES = data.get(
+            'torrent_series_max_failures', TORRENT_SERIES_MAX_FAILURES
+        )
     except Exception:
         pass
 
@@ -223,6 +233,28 @@ def set_cache_enabled(value):
     CACHE_ENABLED = bool(value)
     logging.getLogger(__name__).debug(f"CACHE_ENABLED ahora es {CACHE_ENABLED}")
     _update_config(cache_enabled=CACHE_ENABLED)
+
+
+def set_torrent_movies_max_failures(value):
+    """Actualiza el máximo de fallos consecutivos para películas torrent."""
+    global TORRENT_MOVIES_MAX_FAILURES
+    TORRENT_MOVIES_MAX_FAILURES = max(1, int(value))
+    logging.getLogger(__name__).debug(
+        "TORRENT_MOVIES_MAX_FAILURES establecido en %s",
+        TORRENT_MOVIES_MAX_FAILURES,
+    )
+    _update_config(torrent_movies_max_failures=TORRENT_MOVIES_MAX_FAILURES)
+
+
+def set_torrent_series_max_failures(value):
+    """Actualiza el máximo de fallos consecutivos para series torrent."""
+    global TORRENT_SERIES_MAX_FAILURES
+    TORRENT_SERIES_MAX_FAILURES = max(1, int(value))
+    logging.getLogger(__name__).debug(
+        "TORRENT_SERIES_MAX_FAILURES establecido en %s",
+        TORRENT_SERIES_MAX_FAILURES,
+    )
+    _update_config(torrent_series_max_failures=TORRENT_SERIES_MAX_FAILURES)
 
 
 # Configuración del logger
