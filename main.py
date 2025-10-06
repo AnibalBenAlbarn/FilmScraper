@@ -40,6 +40,35 @@ def pause():
     input("\nPulsa ENTER para continuar...")
 
 
+def configure_max_failures(current_value):
+    """Permite configurar el número máximo de fallos consecutivos."""
+    print("\n--- Configuración de fallos consecutivos ---")
+    if current_value is None:
+        print("Valor actual: predeterminado (10)")
+    else:
+        print(f"Valor actual: {current_value}")
+
+    while True:
+        new_value = input(
+            "Introduce el nuevo límite (ENTER para mantener el actual): "
+        ).strip()
+
+        if not new_value:
+            print("\nSe mantiene el valor actual.")
+            return current_value
+
+        try:
+            parsed_value = int(new_value)
+            if parsed_value <= 0:
+                raise ValueError
+        except ValueError:
+            print("\n⚠️ Introduce un número entero positivo.")
+            continue
+
+        print(f"\nNuevo límite establecido: {parsed_value}")
+        return parsed_value
+
+
 def run_script(module_name, extra_args=None):
     """Ejecuta un módulo scraper en un proceso independiente."""
     cmd = [sys.executable, "-m", f"Scripts.{module_name}"]
@@ -126,18 +155,34 @@ def direct_menu():
 
 
 def torrent_movies_menu():
+    max_failures = None
+
     while True:
         clear_screen()
         print("Películas (TORRENT)")
         print("1) Reanudar/Actualizar desde último progreso (recomendado)")
         print("2) Empezar desde página específica")
+        if max_failures is None:
+            current_failures_label = "predeterminado (10)"
+        else:
+            current_failures_label = str(max_failures)
+        print(f"3) Cambiar límite de fallos consecutivos (actual: {current_failures_label})")
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('torrent_dw_films_scraper', ['--resume'])
+            extra_args = ['--resume']
+            if max_failures is not None:
+                extra_args.extend(['--max-failures', str(max_failures)])
+            run_script('torrent_dw_films_scraper', extra_args)
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('torrent_dw_films_scraper', ['--start-page', start_page])
+            extra_args = ['--start-page', start_page]
+            if max_failures is not None:
+                extra_args.extend(['--max-failures', str(max_failures)])
+            run_script('torrent_dw_films_scraper', extra_args)
+        elif choice == '3':
+            max_failures = configure_max_failures(max_failures)
+            pause()
         elif choice == '0':
             return
         else:
@@ -146,18 +191,34 @@ def torrent_movies_menu():
 
 
 def torrent_series_menu():
+    max_failures = None
+
     while True:
         clear_screen()
         print("Series (TORRENT)")
         print("1) Reanudar/Actualizar desde último progreso (recomendado)")
         print("2) Empezar desde página específica")
+        if max_failures is None:
+            current_failures_label = "predeterminado (10)"
+        else:
+            current_failures_label = str(max_failures)
+        print(f"3) Cambiar límite de fallos consecutivos (actual: {current_failures_label})")
         print("0) Volver")
         choice = input('> ').strip()
         if choice == '1':
-            run_script('torrent_dw_series_scraper', ['--resume'])
+            extra_args = ['--resume']
+            if max_failures is not None:
+                extra_args.extend(['--max-failures', str(max_failures)])
+            run_script('torrent_dw_series_scraper', extra_args)
         elif choice == '2':
             start_page = input('\n¿Desde qué página quieres empezar?\n> ').strip()
-            run_script('torrent_dw_series_scraper', ['--start-page', start_page])
+            extra_args = ['--start-page', start_page]
+            if max_failures is not None:
+                extra_args.extend(['--max-failures', str(max_failures)])
+            run_script('torrent_dw_series_scraper', extra_args)
+        elif choice == '3':
+            max_failures = configure_max_failures(max_failures)
+            pause()
         elif choice == '0':
             return
         else:
